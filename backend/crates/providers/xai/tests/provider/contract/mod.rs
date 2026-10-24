@@ -4426,6 +4426,10 @@ impl gateway_core::engine::upstream_adapter::UpstreamAdapter for AdapterProbe {
         "http_sse"
     }
 
+    fn supports_authentication(&self, kind: &str) -> bool {
+        kind == "oauth"
+    }
+
     fn execute(
         self: Arc<Self>,
         invocation: gateway_core::engine::upstream_adapter::UpstreamAdapterInvocation,

@@ -83,9 +83,7 @@ pub trait UpstreamAdapter: fmt::Debug + Send + Sync {
     fn transport(&self) -> &str;
 
     /// 选号前复核注册的认证资格，发送前仍由执行端校验当前凭据
-    fn supports_authentication(&self, _kind: &str) -> bool {
-        true
-    }
+    fn supports_authentication(&self, kind: &str) -> bool;
 }
 
 /// 一次执行的宿主事实；账号及 Provider 归属不可由插件返回值覆盖
