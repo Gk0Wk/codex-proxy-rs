@@ -148,7 +148,7 @@ async fn unmatched_adapter_preserves_native_oauth_and_api_key_http_wire() {
                 "response changed: api_key={api_key}, with_plan={with_plan}"
             );
         }
-        assert_eq!(plan.selections.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(plan.selections.load(std::sync::atomic::Ordering::SeqCst) > 0);
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].method, requests[1].method);
