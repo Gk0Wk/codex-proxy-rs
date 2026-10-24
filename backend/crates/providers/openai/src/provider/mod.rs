@@ -267,6 +267,50 @@ impl CodexProvider {
         }
     }
 
+    // 原生与适配器共用准入复验和轮次关联，不复制原生续接或修改插件正文
+    async fn validate_generate_selection(
+        &self,
+        generate: &GenerateRequest,
+        headers: &[MiddlewareHeader],
+        context: &AttemptContext,
+        lease: &mut CodexCredentialLease,
+        affinity: Option<&CodexSessionAffinity>,
+        cyber_policy_key: Option<&ProviderSessionAffinityKey>,
+    ) -> Result<(), ProviderError> {
+        if context.is_diagnostic_required_account() {
+            return Ok(());
+        }
+        self.selector
+            .validate_translated_selection(
+                lease,
+                affinity,
+                cyber_policy_key,
+                context.account_selection_policy(),
+            )
+            .await
+            .map_err(map_selection_error)?;
+        if let Some(affinity) = affinity
+            && let Some(turn) = turn_id_with_headers(
+                generate.protocol_payload().body(),
+                generate.protocol_payload().context(),
+                headers,
+            )
+            .and_then(|turn| derive_turn_alias(&turn, context.client_api_key_ref()))
+        {
+            self.selector
+                .remember_turn(
+                    &turn,
+                    affinity,
+                    context
+                        .account_selection_policy()
+                        .openai_session_affinity_ttl(),
+                )
+                .await
+                .map_err(map_selection_error)?;
+        }
+        Ok(())
+    }
+
     fn client_for_request(
         &self,
         context: &AttemptContext,
@@ -626,6 +670,16 @@ impl Provider for CodexProvider {
         let guardian = upstream
             .as_ref()
             .is_some_and(CodexResponsesRequest::is_guardian);
+        let adapter_affinity = upstream
+            .as_ref()
+            .filter(|_| adapter.is_some())
+            .map(|request| {
+                (
+                    derive_codex_session_affinity(request, context.client_api_key_ref()),
+                    derive_codex_cyber_policy_session_key(request, context.client_api_key_ref()),
+                    false,
+                )
+            });
         let preselection = upstream
             .filter(|_| adapter.is_none())
             .map(|upstream| self.prepare_generate_request(generate, upstream, &context));
@@ -633,7 +687,7 @@ impl Provider for CodexProvider {
             prepared.checked_native_continuation_scope(&context)?;
         }
         let (selection_session_affinity, selection_cyber_policy_key, requires_websocket) =
-            preselection.map_or((None, None, false), |prepared| {
+            preselection.map_or(adapter_affinity.unwrap_or((None, None, false)), |prepared| {
                 let requires_websocket =
                     transport_requirement(&prepared.upstream).requires_websocket()
                         || (context.continuation_attempt() == ContinuationAttempt::Native
@@ -696,16 +750,18 @@ impl Provider for CodexProvider {
                 Box::new(move |operation, middleware_headers| {
                     Box::pin(async move {
                         if let Some(adapter) = adapter {
-                            return provider.execute_upstream_adapter(
-                                operation,
-                                middleware_headers,
-                                terminal_model,
-                                terminal_context,
-                                lease,
-                                account_selection_wait_ms,
-                                frozen_requirements,
-                                adapter,
-                            );
+                            return provider
+                                .execute_upstream_adapter(
+                                    operation,
+                                    middleware_headers,
+                                    terminal_model,
+                                    terminal_context,
+                                    lease,
+                                    account_selection_wait_ms,
+                                    frozen_requirements,
+                                    adapter,
+                                )
+                                .await;
                         }
                         provider
                             .execute_selected_generate(
@@ -781,39 +837,15 @@ impl CodexProvider {
             derive_codex_transport_key(&upstream_request, context.client_api_key_ref());
         let previous_session = processed.previous_session;
         let continuation_requested = processed.continuation_requested;
-        let session_affinity = processed.session_affinity;
-        let cyber_policy_session_key = processed.cyber_policy_session_key;
-        if !context.is_diagnostic_required_account() {
-            self.selector
-                .validate_translated_selection(
-                    &mut lease,
-                    session_affinity.as_ref(),
-                    cyber_policy_session_key.as_ref(),
-                    context.account_selection_policy(),
-                )
-                .await
-                .map_err(map_selection_error)?;
-        }
-        if !context.is_diagnostic_required_account()
-            && let Some(affinity) = session_affinity.as_ref()
-            && let Some(turn) = turn_id_with_headers(
-                generate.protocol_payload().body(),
-                generate.protocol_payload().context(),
-                &middleware_headers,
-            )
-            .and_then(|turn| derive_turn_alias(&turn, context.client_api_key_ref()))
-        {
-            self.selector
-                .remember_turn(
-                    &turn,
-                    affinity,
-                    context
-                        .account_selection_policy()
-                        .openai_session_affinity_ttl(),
-                )
-                .await
-                .map_err(map_selection_error)?;
-        }
+        self.validate_generate_selection(
+            &generate,
+            &middleware_headers,
+            &context,
+            &mut lease,
+            processed.session_affinity.as_ref(),
+            processed.cyber_policy_session_key.as_ref(),
+        )
+        .await?;
         let lease = Arc::new(lease);
         if previous_session.as_ref().is_some_and(|state| {
             state
