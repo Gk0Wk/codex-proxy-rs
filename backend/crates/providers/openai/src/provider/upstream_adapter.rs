@@ -21,13 +21,13 @@ struct SelectedConnection {
 impl CodexProvider {
     // 与原生 terminal 共用一次选号结果，不能为适配器重新获取账号或租约
     #[expect(clippy::too_many_arguments)]
-    pub(super) async fn execute_upstream_adapter(
+    pub(super) fn execute_upstream_adapter(
         self: Arc<Self>,
         operation: Operation,
         headers: Vec<MiddlewareHeader>,
         model: UpstreamModelId,
         context: AttemptContext,
-        mut lease: CodexCredentialLease,
+        lease: CodexCredentialLease,
         account_selection_wait_ms: u64,
         requirements: CapabilityRequirements,
         adapter: Arc<dyn UpstreamAdapter>,
@@ -42,30 +42,8 @@ impl CodexProvider {
             Operation::Generate(generate)
                 if generate.protocol_payload().protocol() == PROVIDER_NAME =>
             {
-                // 仅解析副本中的身份，原始 operation 继续交给插件，不准备原生续接状态
-                let mut request = encode_generate_request(generate, model.as_str(), None)
-                    .map_err(map_request_error)?;
-                request.client_account_follow_only =
-                    crate::request_identity::follows_session_with_headers(
-                        generate.protocol_payload().body(),
-                        generate.protocol_payload().context(),
-                        &headers,
-                    );
-                request.client_account_session_id = account_session_with_headers(
-                    generate.protocol_payload().body(),
-                    generate.protocol_payload().context(),
-                    &headers,
-                );
-                self.validate_generate_selection(
-                    generate,
-                    &headers,
-                    &context,
-                    &mut lease,
-                    derive_codex_session_affinity(&request, context.client_api_key_ref()).as_ref(),
-                    derive_codex_cyber_policy_session_key(&request, context.client_api_key_ref())
-                        .as_ref(),
-                )
-                .await?;
+                let request =
+                    CodexResponsesRequest::from_body(generate.protocol_payload().body().clone());
                 normalize_service_tier(request.service_tier())
             }
             _ => None,

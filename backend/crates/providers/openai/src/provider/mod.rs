@@ -267,28 +267,16 @@ impl CodexProvider {
         }
     }
 
-    // 原生与适配器共用准入复验和轮次关联，不复制原生续接或修改插件正文
-    async fn validate_generate_selection(
+    async fn remember_generate_turn(
         &self,
         generate: &GenerateRequest,
         headers: &[MiddlewareHeader],
         context: &AttemptContext,
-        lease: &mut CodexCredentialLease,
         affinity: Option<&CodexSessionAffinity>,
-        cyber_policy_key: Option<&ProviderSessionAffinityKey>,
     ) -> Result<(), ProviderError> {
         if context.is_diagnostic_required_account() {
             return Ok(());
         }
-        self.selector
-            .validate_translated_selection(
-                lease,
-                affinity,
-                cyber_policy_key,
-                context.account_selection_policy(),
-            )
-            .await
-            .map_err(map_selection_error)?;
         if let Some(affinity) = affinity
             && let Some(turn) = turn_id_with_headers(
                 generate.protocol_payload().body(),
@@ -666,7 +654,7 @@ impl Provider for CodexProvider {
             .transpose()
             .map_err(map_request_error)?;
         // 固定调度约束：Guardian 分类先于选号，不能随原生/适配器发送路径改变
-        // 复用编码器的权威 metadata 解析，但只为原生路径准备会话与传输状态
+        // 复用编码器的权威 metadata 解析，但只为原生路径准备续接与传输状态
         let guardian = upstream
             .as_ref()
             .is_some_and(CodexResponsesRequest::is_guardian);
@@ -734,6 +722,16 @@ impl Provider for CodexProvider {
         };
         let account_selection_wait_ms =
             u64::try_from(selection_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if adapter.is_some() {
+            // 适配器自行解释业务改写，宿主轮次关联只使用本次选号已确认的会话
+            self.remember_generate_turn(
+                generate,
+                &[],
+                &context,
+                selection_session_affinity.as_ref(),
+            )
+            .await?;
+        }
         let provider_kind = ProviderKind::new(PROVIDER_NAME)
             .map_err(|_| provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent))?;
         let account_id = lease.account_id().clone();
@@ -750,18 +748,16 @@ impl Provider for CodexProvider {
                 Box::new(move |operation, middleware_headers| {
                     Box::pin(async move {
                         if let Some(adapter) = adapter {
-                            return provider
-                                .execute_upstream_adapter(
-                                    operation,
-                                    middleware_headers,
-                                    terminal_model,
-                                    terminal_context,
-                                    lease,
-                                    account_selection_wait_ms,
-                                    frozen_requirements,
-                                    adapter,
-                                )
-                                .await;
+                            return provider.execute_upstream_adapter(
+                                operation,
+                                middleware_headers,
+                                terminal_model,
+                                terminal_context,
+                                lease,
+                                account_selection_wait_ms,
+                                frozen_requirements,
+                                adapter,
+                            );
                         }
                         provider
                             .execute_selected_generate(
@@ -837,13 +833,22 @@ impl CodexProvider {
             derive_codex_transport_key(&upstream_request, context.client_api_key_ref());
         let previous_session = processed.previous_session;
         let continuation_requested = processed.continuation_requested;
-        self.validate_generate_selection(
+        if !context.is_diagnostic_required_account() {
+            self.selector
+                .validate_translated_selection(
+                    &mut lease,
+                    processed.session_affinity.as_ref(),
+                    processed.cyber_policy_session_key.as_ref(),
+                    context.account_selection_policy(),
+                )
+                .await
+                .map_err(map_selection_error)?;
+        }
+        self.remember_generate_turn(
             &generate,
             &middleware_headers,
             &context,
-            &mut lease,
             processed.session_affinity.as_ref(),
-            processed.cyber_policy_session_key.as_ref(),
         )
         .await?;
         let lease = Arc::new(lease);
