@@ -280,6 +280,11 @@ impl GrokBuildProvider {
         let provider_kind =
             ProviderKind::new(XAI_PROVIDER_NAME).map_err(|_| protocol_not_sent())?;
         let account_id = selected.selected.account_id().clone();
+        let adapter = selected.context.upstream_adapter_for_account(
+            candidate.provider(),
+            &selected.upstream_model,
+            &account_id,
+        )?;
         let model = selected.upstream_model.as_str().to_owned();
         let middleware_context = selected.context.clone();
         let provider = Arc::clone(&self);
@@ -656,7 +661,7 @@ async fn select_grok_session(
     affinity: Option<GrokSessionAffinityKey>,
 ) -> Result<SelectedGrokSession, ProviderError> {
     let required_account = context.required_account().cloned().or(operation_account);
-    let selection = GrokSessionSelection::new(
+    let mut selection = GrokSessionSelection::new(
         wire_upstream_model.clone(),
         context.excluded_accounts().clone(),
         required_account.clone(),
@@ -678,6 +683,7 @@ async fn select_grok_session(
         AccountEligibilityPolicy::Enforce
     })
     .with_affinity(affinity);
+    selection.upstream_context = Some(context.clone());
     if context.deadline().is_elapsed() {
         return Err(provider_error(
             ProviderErrorKind::Timeout,

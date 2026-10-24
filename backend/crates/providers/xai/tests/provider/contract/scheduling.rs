@@ -38,6 +38,113 @@ impl RequestPolicyPlan for Filter {
     }
 }
 
+#[derive(Debug)]
+struct PreferFirstAdapterAccount;
+
+impl RequestPolicyPlan for PreferFirstAdapterAccount {
+    fn route_model(
+        &self,
+        _: ModelRouteInput,
+    ) -> BoxFuture<'static, Result<ModelRouteDecision, RequestPolicyFault>> {
+        Box::pin(async { Ok(ModelRouteDecision::Unhandled) })
+    }
+
+    fn schedule_account(
+        &self,
+        input: AccountScheduleInput,
+    ) -> BoxFuture<'static, Result<AccountScheduleDecision, RequestPolicyFault>> {
+        let preferred = account_id("adapter-filter-a");
+        let decision = if input
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.account_id() == &preferred)
+        {
+            AccountScheduleDecision::Pick(preferred)
+        } else {
+            AccountScheduleDecision::Delegate
+        };
+        Box::pin(async move { Ok(decision) })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AdapterIneligibility {
+    Unavailable,
+    AuthenticationMismatch,
+}
+
+#[derive(Debug)]
+struct AccountEligibilityPlan {
+    ineligibility: AdapterIneligibility,
+    polls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl gateway_core::engine::upstream_adapter::UpstreamAdapterPlan for AccountEligibilityPlan {
+    fn select(
+        &self,
+        _: &AttemptContext,
+        _: &ProviderKind,
+        _: &UpstreamModelId,
+    ) -> Result<
+        Option<Arc<dyn gateway_core::engine::upstream_adapter::UpstreamAdapter>>,
+        ProviderError,
+    > {
+        Ok(None)
+    }
+
+    fn select_for_account(
+        &self,
+        _: &AttemptContext,
+        _: &ProviderKind,
+        _: &UpstreamModelId,
+        account: &ProviderAccountId,
+    ) -> Result<
+        Option<Arc<dyn gateway_core::engine::upstream_adapter::UpstreamAdapter>>,
+        ProviderError,
+    > {
+        if account != &account_id("adapter-filter-a") {
+            return Ok(None);
+        }
+        match self.ineligibility {
+            AdapterIneligibility::Unavailable => Err(ProviderError::new(
+                ProviderErrorKind::Unavailable,
+                UpstreamSendState::NotSent,
+            )),
+            AdapterIneligibility::AuthenticationMismatch => Ok(Some(Arc::new(IneligibleAdapter {
+                polls: Arc::clone(&self.polls),
+            }))),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct IneligibleAdapter {
+    polls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl gateway_core::engine::upstream_adapter::UpstreamAdapter for IneligibleAdapter {
+    fn transport(&self) -> &str {
+        "http_sse"
+    }
+
+    fn supports_authentication(&self, _: &str) -> bool {
+        false
+    }
+
+    fn execute(
+        self: Arc<Self>,
+        _: gateway_core::engine::upstream_adapter::UpstreamAdapterInvocation,
+    ) -> gateway_core::engine::provider::EventStream {
+        self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(futures::stream::once(async {
+            Err(ProviderError::new(
+                ProviderErrorKind::Cancelled,
+                UpstreamSendState::NotSent,
+            ))
+        }))
+    }
+}
+
 #[derive(Default)]
 struct Leases {
     busy: Mutex<bool>,
@@ -268,5 +375,147 @@ async fn filtered_scheduling_covers_lease_retry_waiting_and_pinned_terminal_reje
             }
         }
         assert!(store.account(&account_id("filter-a")).unwrap().enabled());
+    }
+}
+
+#[tokio::test]
+async fn account_scoped_adapter_filters_unavailable_and_authentication_incompatible_accounts() {
+    for ineligibility in [
+        AdapterIneligibility::Unavailable,
+        AdapterIneligibility::AuthenticationMismatch,
+    ] {
+        let store = MemoryProviderAccountStore::shared();
+        let repository = GrokCredentialRepository::new(store.clone());
+        let mut accounts = BTreeMap::new();
+        let kind = ProviderKind::new("xai").unwrap();
+        for suffix in ["adapter-filter-a", "adapter-filter-b"] {
+            let input = create_input(suffix, suffix);
+            seed_input(&store, &input).await.unwrap();
+            repository
+                .update_state(&UpdateGrokCredentialState {
+                    account_id: input.account_id.clone(),
+                    expected_revision: CredentialRevision::new(1).unwrap(),
+                    credential_state: CredentialState::Ready,
+                    error_reason: None,
+                    error_message: None,
+                    observed_at: chrono::Utc::now(),
+                })
+                .await
+                .unwrap();
+            accounts.insert(
+                input.account_id,
+                RuntimeAccount::new(kind.clone(), BTreeSet::new()),
+            );
+        }
+        let leases = Arc::new(Leases::default());
+        let cache = MemoryGrokCatalogCache::shared();
+        let selector = GrokAccountSessionSelector::new(
+            kind.clone(),
+            repository.clone(),
+            cache.clone(),
+            Arc::new(crate::support::grok_quota_service(
+                repository.clone(),
+                Arc::new(UnavailableBillingTransport),
+            )),
+            leases.clone(),
+            Arc::new(MemoryCooldownPort::default()),
+            Arc::new(AccountFeedbackStats::default()),
+        );
+        let provider = Arc::new(
+            GrokBuildProvider::new(
+                Arc::new(selector),
+                StubInferenceTransport::success(),
+                Arc::new(crate::support::grok_catalog_service(
+                    repository,
+                    Arc::new(StaticCatalogTransport),
+                    cache,
+                )),
+                StubRecovery::new(GrokCredentialRecoveryOutcome::Unavailable),
+                Arc::new(AccountFeedbackStats::default()),
+                crate::support::xai_wire_profile(),
+            )
+            .unwrap(),
+        );
+        let id = ModelRequestId::new("req_xai_adapter_filter").unwrap();
+        let key = ClientApiKeyId::new("key_xai_contract").unwrap();
+        let policy = RequestPolicyContext::new(
+            Arc::new(PreferFirstAdapterAccount),
+            ExtensionSetReference::new(
+                ExtensionSetId::new("adapter-filter-policy".into()).unwrap(),
+                Arc::new(TestExtensionLease),
+            ),
+            id.clone(),
+            key.clone(),
+            vec![],
+        );
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let adapter_plan = gateway_core::engine::upstream_adapter::FrozenUpstreamAdapterPlan::new(
+            Arc::new(AccountEligibilityPlan {
+                ineligibility,
+                polls: Arc::clone(&polls),
+            }),
+            ExtensionSetReference::new(
+                ExtensionSetId::new("adapter-filter-plan".into()).unwrap(),
+                Arc::new(TestExtensionLease),
+            ),
+        );
+        let scope = Arc::new(FrozenAccountScope::new(
+            Arc::new(RuntimeAccountDirectory::new(accounts)),
+            ClientRoutingScope::all_accounts(),
+        ));
+        let operation = operation();
+        let snapshot = RuntimeSnapshot::new(
+            ConfigRevision::new(1).unwrap(),
+            gateway_core::settings::SettingsValues::new(2, "smart", Default::default(), None, None),
+            vec![kind.clone()],
+            vec![ProviderModel::new(
+                kind,
+                UpstreamModelId::new(MODEL).unwrap(),
+                ModelCapabilities::new(BTreeSet::from([OperationKind::Generate]), Some(131_072))
+                    .with_feature(Feature::NativeContinuation, SupportLevel::Native),
+            )],
+            vec![],
+        )
+        .unwrap();
+        let plan = snapshot
+            .plan(
+                &PublicModelId::new(MODEL).unwrap(),
+                &operation,
+                scope.clone(),
+                &RoutingContext::default(),
+            )
+            .unwrap();
+        let request = ProviderRequest::new(operation, plan.candidates()[0].clone());
+        let attempt = AttemptContext::new(
+            gateway_core::engine::RequestAttemptContext::new(id, key)
+                .with_request_policy(Some(policy))
+                .with_upstream_adapters(Some(adapter_plan)),
+            NonZeroU32::MIN,
+            SystemTime::now() + Duration::from_secs(5),
+            selection_policy(),
+            AccountAttemptContext::new(BTreeSet::new(), None, None).with_account_scope(scope),
+            None,
+            CancellationToken::new(),
+        );
+
+        let stream = provider
+            .execute(request, attempt)
+            .await
+            .expect("eligible account remains available");
+        assert_eq!(
+            stream.metadata().provider_account_id(),
+            &account_id("adapter-filter-b"),
+            "{ineligibility:?}"
+        );
+        assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(
+            leases
+                .acquired
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|account| account != &account_id("adapter-filter-a"))
+        );
+        drop(stream);
     }
 }

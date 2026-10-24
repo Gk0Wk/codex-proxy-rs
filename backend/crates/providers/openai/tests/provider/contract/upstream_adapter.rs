@@ -170,6 +170,244 @@ async fn upstream_adapter_reuses_selected_native_account_inside_attempt_onion_an
 
 type SelectedConnection = Arc<dyn UpstreamAccountConnection>;
 
+#[derive(Debug, Clone)]
+struct AccountScopedProbe {
+    available: bool,
+    oauth: bool,
+}
+
+impl UpstreamAdapterPlan for AccountScopedProbe {
+    fn select(
+        &self,
+        _: &AttemptContext,
+        _: &ProviderKind,
+        _: &UpstreamModelId,
+    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, gateway_core::error::ProviderError> {
+        Ok(None)
+    }
+
+    fn select_for_account(
+        &self,
+        _: &AttemptContext,
+        _: &ProviderKind,
+        _: &UpstreamModelId,
+        account: &ProviderAccountId,
+    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, gateway_core::error::ProviderError> {
+        if account.as_str() != "acct_subagent_a" {
+            return Ok(None);
+        }
+        if !self.available {
+            return Err(gateway_core::error::ProviderError::new(
+                ProviderErrorKind::Unavailable,
+                UpstreamSendState::NotSent,
+            ));
+        }
+        Ok(Some(Arc::new(self.clone())))
+    }
+}
+
+impl UpstreamAdapter for AccountScopedProbe {
+    fn transport(&self) -> &str {
+        "http_json"
+    }
+    fn supports_authentication(&self, kind: &str) -> bool {
+        self.oauth && kind == "oauth"
+    }
+    fn execute(
+        self: Arc<Self>,
+        invocation: UpstreamAdapterInvocation,
+    ) -> gateway_core::engine::provider::EventStream {
+        assert_eq!(invocation.account.account_id().as_str(), "acct_subagent_a");
+        Box::pin(futures::stream::once(async {
+            Err(gateway_core::error::ProviderError::new(
+                ProviderErrorKind::Cancelled,
+                UpstreamSendState::NotSent,
+            ))
+        }))
+    }
+}
+
+#[tokio::test]
+async fn account_scoped_adapter_selection_reuses_native_pool_and_filters_ineligible_accounts() {
+    for (available, oauth) in [(true, true), (true, false), (false, true)] {
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_subagent_a").await;
+        store.set_scheduling("acct_subagent_a", None, AccountWeight::new(100).unwrap());
+        let server = MockServer::start().await;
+        store
+            .seed_api_key(
+                "acct_subagent_b",
+                server.uri(),
+                provider_openai::credential::ResponsesTransport::Http,
+            )
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(CAPTURE_COMPLETED_SSE),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = provider_with_base_url(&store, server.uri());
+        let request_context = || {
+            AttemptContext::new(
+                RequestAttemptContext::new(
+                    ModelRequestId::new("req_account_adapter").unwrap(),
+                    ClientApiKeyId::new("key_openai_contract").unwrap(),
+                )
+                .with_upstream_adapters(Some(
+                    gateway_core::engine::upstream_adapter::FrozenUpstreamAdapterPlan::new(
+                        Arc::new(AccountScopedProbe { available, oauth }),
+                        ExtensionSetReference::new(
+                            ExtensionSetId::new("account-adapters".to_owned()).unwrap(),
+                            Arc::new(TestExtensionLease),
+                        ),
+                    ),
+                )),
+                NonZeroU32::MIN,
+                SystemTime::now() + Duration::from_secs(5),
+                account_policy(),
+                AccountAttemptContext::new(BTreeSet::new(), None, None)
+                    .with_account_scope(contract_account_scope()),
+                None,
+                CancellationToken::new(),
+            )
+        };
+        if available && oauth {
+            let mut stream = provider
+                .clone()
+                .execute(
+                    planned_request("openai", generate_operation()),
+                    request_context(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                stream.metadata().provider_account_id().as_str(),
+                "acct_subagent_a"
+            );
+            assert_eq!(
+                stream.next().await.unwrap().unwrap_err().kind(),
+                ProviderErrorKind::Cancelled
+            );
+            drop(stream);
+            assert!(server.received_requests().await.unwrap().is_empty());
+            store
+                .set_enabled(&ProviderAccountId::new("acct_subagent_a").unwrap(), false)
+                .await
+                .unwrap();
+        }
+        let mut stream = provider
+            .execute(
+                planned_request("openai", generate_operation()),
+                request_context(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stream.metadata().provider_account_id().as_str(),
+            "acct_subagent_b"
+        );
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn account_scoped_adapter_preselection_keeps_extension_continuations_out_of_native_checks() {
+    use gateway_core::operation::ExtensionSessionOwner;
+
+    for attempt in [
+        ContinuationAttempt::Native,
+        ContinuationAttempt::ReplayOwner,
+        ContinuationAttempt::ReplayAny,
+    ] {
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_subagent_a").await;
+        let server = MockServer::start().await;
+        let provider = provider_with_base_url(&store, server.uri());
+        let kind = ProviderKind::new("openai").unwrap();
+        let account = ProviderAccountId::new("acct_subagent_a").unwrap();
+        let key = ClientApiKeyId::new("key_openai_contract").unwrap();
+        let pin = NativeContinuationPin::new(
+            PreviousResponseId::new("public-response"),
+            PreviousResponseId::new("adapter-response"),
+            key.clone(),
+            kind.clone(),
+            account.clone(),
+        );
+        let context = AttemptContext::new(
+            RequestAttemptContext::new(
+                ModelRequestId::new("req_scoped_continuation").unwrap(),
+                key,
+            )
+            .with_upstream_adapters(Some(
+                gateway_core::engine::upstream_adapter::FrozenUpstreamAdapterPlan::new(
+                    Arc::new(AccountScopedProbe {
+                        available: true,
+                        oauth: true,
+                    }),
+                    ExtensionSetReference::new(
+                        ExtensionSetId::new("account-adapters".to_owned()).unwrap(),
+                        Arc::new(TestExtensionLease),
+                    ),
+                ),
+            )),
+            NonZeroU32::MIN,
+            SystemTime::now() + Duration::from_secs(5),
+            account_policy(),
+            AccountAttemptContext::new(
+                Default::default(),
+                None,
+                Some(ProviderAccountStateOwner::new(kind, account)),
+            )
+            .with_account_scope(contract_account_scope()),
+            Some(ContinuationBinding::Pinned(pin)),
+            CancellationToken::new(),
+        )
+        .with_continuation_attempt(attempt);
+        let state = ProviderSessionState::new(
+            "openai",
+            Map::from_iter([("opaque".into(), json!("adapter-only"))]),
+        )
+        .unwrap()
+        .with_extension_owner(ExtensionSessionOwner {
+            instance_id: "instance".into(),
+            contribution_id: "adapter".into(),
+            adapter_id: "example".into(),
+            generation: 1,
+            incarnation: "process".into(),
+            connection_local: true,
+        });
+        let operation = generate_operation().with_provider_session_state(state);
+        let result = provider
+            .execute(planned_request("openai", operation), context)
+            .await;
+        if attempt == ContinuationAttempt::ReplayAny {
+            let error = result
+                .err()
+                .expect("unowned extension state cannot migrate");
+            assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+        } else {
+            let mut stream = result.unwrap();
+            assert_eq!(
+                stream.metadata().provider_account_id().as_str(),
+                "acct_subagent_a"
+            );
+            assert_eq!(
+                stream.next().await.unwrap().unwrap_err().kind(),
+                ProviderErrorKind::Cancelled
+            );
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+}
+
 struct ConnectionProbe {
     selected: Arc<Mutex<Option<oneshot::Sender<SelectedConnection>>>>,
 }

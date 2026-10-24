@@ -10,6 +10,7 @@ pub(crate) mod target;
 use std::{fmt, sync::Arc};
 
 use gateway_core::{
+    account::ProviderAccountId,
     engine::{
         AttemptContext,
         upstream_adapter::{UpstreamAdapter, UpstreamAdapterInvocation, UpstreamAdapterPlan},
@@ -58,6 +59,13 @@ impl UpstreamAdapter for PluginUpstreamAdapter {
         self.declaration.transport.as_str()
     }
 
+    fn supports_authentication(&self, kind: &str) -> bool {
+        self.declaration
+            .authentication_kinds
+            .iter()
+            .any(|candidate| candidate == kind)
+    }
+
     fn execute(
         self: Arc<Self>,
         invocation: UpstreamAdapterInvocation,
@@ -92,6 +100,28 @@ impl UpstreamAdapterPlan for PluginUpstreamAdapterPlan {
         provider: &ProviderKind,
         model: &UpstreamModelId,
     ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
+        self.select_matching(context, provider, model, None)
+    }
+
+    fn select_for_account(
+        &self,
+        context: &AttemptContext,
+        provider: &ProviderKind,
+        model: &UpstreamModelId,
+        account: &ProviderAccountId,
+    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
+        self.select_matching(context, provider, model, Some(account))
+    }
+}
+
+impl PluginUpstreamAdapterPlan {
+    fn select_matching(
+        &self,
+        context: &AttemptContext,
+        provider: &ProviderKind,
+        model: &UpstreamModelId,
+        account: Option<&ProviderAccountId>,
+    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
         let model = context
             .requested_model()
             .map_or(model.as_str(), |model| model.as_str());
@@ -107,6 +137,17 @@ impl UpstreamAdapterPlan for PluginUpstreamAdapterPlan {
                 continue;
             }
             let adapter = entry.adapter.as_ref().ok_or_else(unavailable)?;
+            if !adapter.declaration.account_ids.is_empty()
+                && !account.is_some_and(|account| {
+                    adapter
+                        .declaration
+                        .account_ids
+                        .iter()
+                        .any(|id| id == account.as_str())
+                })
+            {
+                continue;
+            }
             if adapter.declaration.provider.as_str() == provider.as_str()
                 && (adapter.declaration.models.is_empty()
                     || adapter

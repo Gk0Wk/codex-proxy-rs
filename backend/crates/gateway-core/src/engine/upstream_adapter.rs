@@ -32,6 +32,17 @@ pub trait UpstreamAdapterPlan: fmt::Debug + Send + Sync {
         provider: &ProviderKind,
         model: &UpstreamModelId,
     ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError>;
+
+    /// 按已知账号解析同一发布代次的执行端，默认沿用请求级选择
+    fn select_for_account(
+        &self,
+        context: &AttemptContext,
+        provider: &ProviderKind,
+        model: &UpstreamModelId,
+        _account: &ProviderAccountId,
+    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
+        self.select(context, provider, model)
+    }
 }
 
 /// 请求同时持有计划及发布集合，防止旧集合先排空进程而中断在途调用
@@ -61,6 +72,17 @@ impl FrozenUpstreamAdapterPlan {
     ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
         self.plan.select(context, provider, model)
     }
+
+    pub(super) fn select_for_account(
+        &self,
+        context: &AttemptContext,
+        provider: &ProviderKind,
+        model: &UpstreamModelId,
+        account: &ProviderAccountId,
+    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
+        self.plan
+            .select_for_account(context, provider, model, account)
+    }
 }
 
 /// 为本次调用选定的适配器，持有对应代次的运行资源
@@ -71,6 +93,11 @@ pub trait UpstreamAdapter: fmt::Debug + Send + Sync {
 
     /// 注册时声明的上游传输，用于宿主登记 attempt
     fn transport(&self) -> &str;
+
+    /// 选号前复核注册的认证资格，发送前仍由执行端校验当前凭据
+    fn supports_authentication(&self, _kind: &str) -> bool {
+        true
+    }
 }
 
 /// 一次执行的宿主事实；账号及 Provider 归属不可由插件返回值覆盖

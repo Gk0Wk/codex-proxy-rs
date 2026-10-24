@@ -113,12 +113,26 @@ async fn setup_with_limits(
     Arc<super::Store>,
     gateway_plugin_runtime::PluginRuntime,
 ) {
-    let contributes = Contributions::from([crate::support::contribution(
+    setup_with_version(config, limits, 4).await
+}
+
+async fn setup_with_version(
+    config: Value,
+    limits: gateway_plugin_runtime::RpcLimits,
+    version: u32,
+) -> (
+    tempfile::TempDir,
+    Arc<super::Store>,
+    gateway_plugin_runtime::PluginRuntime,
+) {
+    let (capability, mut contribution) = crate::support::contribution(
         Capability::UpstreamAdapter,
         vec![Stage::Upstream],
         vec!["openai".into()],
         vec!["openai".into()],
-    )]);
+    );
+    contribution.version = version;
+    let contributes = Contributions::from([(capability, contribution)]);
     let (cache, store, runtime) =
         super::setup_with_limits(contributes, Default::default(), limits).await;
     {
@@ -209,7 +223,7 @@ fn execute_with_context(
     let provider = ProviderKind::new("openai").unwrap();
     let model = UpstreamModelId::new("native-model").unwrap();
     let adapter = context
-        .upstream_adapter(&provider, &model)
+        .upstream_adapter_for_account(&provider, &model, &account.id)
         .unwrap()
         .unwrap();
     let metadata = ProviderCallMetadata::new(
@@ -238,6 +252,82 @@ fn execute_with_context(
         metadata,
         account,
     })
+}
+
+#[tokio::test]
+async fn account_scoped_adapters_share_a_model_without_sharing_their_targets() {
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    for server in [&first, &second] {
+        Mock::given(method("POST"))
+            .and(path("/adapter/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+    let mut config = configuration(&first.uri(), false);
+    let mut second_declaration = config["upstream_registration"]["adapters"][0].clone();
+    config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
+    second_declaration["id"] = json!("second");
+    second_declaration["base_url"] = json!(format!("{}/adapter/", second.uri()));
+    second_declaration["account_ids"] = json!(["acct_two"]);
+    config["upstream_registration"]["adapters"]
+        .as_array_mut()
+        .unwrap()
+        .push(second_declaration);
+    let (cache, _, runtime) = setup_with_version(config, Default::default(), 5).await;
+    let generation = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
+        .await
+        .unwrap();
+    let provider = ProviderKind::new("openai").unwrap();
+    let model = UpstreamModelId::new("native-model").unwrap();
+    {
+        let context = context(&runtime, &generation, "key-one");
+        assert!(
+            context
+                .upstream_adapter(&provider, &model)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            context
+                .upstream_adapter_for_account(
+                    &provider,
+                    &model,
+                    &ProviderAccountId::new("acct_native").unwrap()
+                )
+                .unwrap()
+                .is_none()
+        );
+    }
+    for (account, expected) in [("acct_one", "example"), ("acct_two", "second")] {
+        let mut stream = execute(
+            &runtime,
+            &generation,
+            Account::with_identity(account, 1),
+            "key-one",
+            None,
+        );
+        let mut completed = 0;
+        let mut adapter = None;
+        while let Some(event) = stream.next().await {
+            let event = event.unwrap();
+            completed += event
+                .canonical_facts()
+                .iter()
+                .filter(|fact| matches!(fact, GatewayEvent::Completed(_)))
+                .count();
+            if let Some(state) = event.session_update() {
+                adapter = Some(state.extension_owner().unwrap().adapter_id.clone());
+            }
+        }
+        assert_eq!(completed, 1);
+        assert_eq!(adapter.as_deref(), Some(expected));
+    }
+    drop(generation);
+    runtime.shutdown().await;
+    super::wait_until_empty(cache.path()).await;
 }
 
 #[tokio::test]
@@ -852,6 +942,11 @@ async fn adapter_does_not_publish_completed_when_rpc_fails_after_terminal_frame(
 
 #[tokio::test]
 async fn overlapping_adapter_declarations_keep_first_match_without_blocking_preparation() {
+    verify_overlapping_declarations(4, false).await;
+    verify_overlapping_declarations(5, true).await;
+}
+
+async fn verify_overlapping_declarations(version: u32, scoped: bool) {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/adapter/responses"))
@@ -860,13 +955,16 @@ async fn overlapping_adapter_declarations_keep_first_match_without_blocking_prep
         .mount(&server)
         .await;
     let mut config = configuration(&server.uri(), false);
+    if scoped {
+        config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
+    }
     let mut duplicate = config["upstream_registration"]["adapters"][0].clone();
     duplicate["base_url"] = json!("https://unused.invalid/adapter/");
     config["upstream_registration"]["adapters"]
         .as_array_mut()
         .unwrap()
         .push(duplicate);
-    let (cache, _, runtime) = setup(config).await;
+    let (cache, _, runtime) = setup_with_version(config, Default::default(), version).await;
     let generation = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
         .await
         .unwrap();
@@ -910,6 +1008,78 @@ async fn adapter_registration_preserves_plugin_targets_with_typed_provider_decod
             .is_err()
     );
     runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn account_scoped_registration_requires_the_v5_contract() {
+    for (version, allowed) in [(4, false), (5, true)] {
+        let mut config = configuration("https://example.invalid", false);
+        config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
+        let (cache, store, runtime) = setup_with_version(config, Default::default(), version).await;
+        let snapshot = store.snapshot.lock().unwrap().clone();
+        assert_eq!(
+            gateway_admin::ports::plugins::PluginPreparation::prepare(&runtime, snapshot)
+                .await
+                .is_ok(),
+            allowed
+        );
+        runtime.shutdown().await;
+        super::wait_until_empty(cache.path()).await;
+    }
+}
+
+#[tokio::test]
+async fn account_scoped_adapter_rechecks_the_invocation_account_before_sending() {
+    let server = MockServer::start().await;
+    let mut config = configuration(&server.uri(), false);
+    config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
+    let (cache, _, runtime) = setup_with_version(config, Default::default(), 5).await;
+    let generation = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
+        .await
+        .unwrap();
+    let context = context(&runtime, &generation, "key-one");
+    let provider = ProviderKind::new("openai").unwrap();
+    let model = UpstreamModelId::new("native-model").unwrap();
+    let adapter = context
+        .upstream_adapter_for_account(
+            &provider,
+            &model,
+            &ProviderAccountId::new("acct_one").unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    let account = Account::with_identity("acct_other", 1);
+    let metadata = ProviderCallMetadata::new(
+        provider,
+        model,
+        account.id.clone(),
+        UpstreamTransport::new(adapter.transport()).unwrap(),
+    );
+    let operation = Operation::Generate(GenerateRequest::from_protocol_payload(
+        ProtocolPayload::json_object(
+            "openai",
+            json!({"model":"native-model","input":"hello"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap(),
+    ));
+    let mut stream = adapter.execute(UpstreamAdapterInvocation {
+        operation,
+        headers: vec![],
+        context,
+        metadata,
+        account: account.clone(),
+    });
+    let error = stream.next().await.unwrap().unwrap_err();
+    assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+    assert_eq!(account.failures.load(Ordering::SeqCst), 1);
+    assert!(server.received_requests().await.unwrap().is_empty());
+    drop(stream);
+    drop(generation);
+    runtime.shutdown().await;
+    super::wait_until_empty(cache.path()).await;
 }
 
 #[tokio::test]
@@ -1239,6 +1409,18 @@ async fn core_published_adapter_uses_normal_attempt_usage_and_cost_ledger() {
 
 #[tokio::test]
 async fn adapter_reconfiguration_disable_and_rollback_keep_inflight_generation_and_reap_workers() {
+    verify_adapter_reconfiguration(4).await;
+    verify_adapter_reconfiguration(5).await;
+}
+
+async fn verify_adapter_reconfiguration(version: u32) {
+    let scoped_configuration = |base: &str| {
+        let mut config = configuration(base, false);
+        if version >= 5 {
+            config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
+        }
+        config
+    };
     let original = MockServer::start().await;
     let replacement = MockServer::start().await;
     for (server, expected) in [(&original, 2), (&replacement, 1)] {
@@ -1248,7 +1430,12 @@ async fn adapter_reconfiguration_disable_and_rollback_keep_inflight_generation_a
             .mount(server)
             .await;
     }
-    let (cache, store, runtime) = setup(configuration(&original.uri(), false)).await;
+    let (cache, store, runtime) = setup_with_version(
+        scoped_configuration(&original.uri()),
+        Default::default(),
+        version,
+    )
+    .await;
     let old = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
         .await
         .unwrap();
@@ -1259,7 +1446,7 @@ async fn adapter_reconfiguration_disable_and_rollback_keep_inflight_generation_a
         let mut snapshot = store.snapshot.lock().unwrap();
         snapshot.config_revision = gateway_admin::model::Revision::new(2).unwrap();
         snapshot.instances[0].revision = snapshot.config_revision;
-        snapshot.instances[0].configuration = configuration(&replacement.uri(), false);
+        snapshot.instances[0].configuration = scoped_configuration(&replacement.uri());
     }
     let new = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(2).unwrap())
         .await
@@ -1316,7 +1503,7 @@ async fn adapter_reconfiguration_disable_and_rollback_keep_inflight_generation_a
         snapshot.config_revision = gateway_admin::model::Revision::new(4).unwrap();
         snapshot.instances[0].revision = snapshot.config_revision;
         snapshot.instances[0].enabled = true;
-        snapshot.instances[0].configuration = configuration(&original.uri(), false);
+        snapshot.instances[0].configuration = scoped_configuration(&original.uri());
     }
     let restored = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(4).unwrap())
         .await

@@ -247,6 +247,7 @@ impl fmt::Debug for SelectedGrokSession {
 /// 单次 selector 调用的入参，持有冻结且不含密钥的尝试视图
 #[derive(Debug, Clone)]
 pub struct GrokSessionSelection {
+    pub(crate) upstream_context: Option<gateway_core::engine::AttemptContext>,
     pub(crate) lease_metadata: Option<Arc<gateway_core::provider_ports::ProviderLeaseMetadata>>,
     upstream_model: UpstreamModelId,
     excluded_accounts: BTreeSet<ProviderAccountId>,
@@ -297,6 +298,7 @@ impl GrokSessionSelection {
     ) -> Self {
         Self {
             lease_metadata: None,
+            upstream_context: None,
             upstream_model,
             excluded_accounts,
             required_account,

@@ -15,7 +15,7 @@ use bytes::Bytes;
 use futures::{StreamExt, future::BoxFuture, stream};
 use gateway_core::account::{
     AccountFeedbackStats, AccountRuntimeSignals, AccountSelectionPolicy, CredentialRevision,
-    CredentialState, ProviderAccountStore, RotationStrategy,
+    CredentialState, ProviderAccountId, ProviderAccountStore, RotationStrategy,
 };
 use gateway_core::engine::continuation::{
     ContinuationBinding, NativeContinuationPin, PreviousResponseId,
@@ -4395,6 +4395,7 @@ async fn configured_request_profile_reaches_inference_headers() {
 #[derive(Debug)]
 struct AdapterProbe {
     polls: Arc<std::sync::atomic::AtomicUsize>,
+    account_scoped: bool,
 }
 
 impl gateway_core::engine::upstream_adapter::UpstreamAdapterPlan for AdapterProbe {
@@ -4408,8 +4409,29 @@ impl gateway_core::engine::upstream_adapter::UpstreamAdapterPlan for AdapterProb
         gateway_core::error::ProviderError,
     > {
         assert_eq!(provider.as_str(), "xai");
+        if self.account_scoped {
+            return Ok(None);
+        }
         Ok(Some(Arc::new(Self {
             polls: self.polls.clone(),
+            account_scoped: self.account_scoped,
+        })))
+    }
+
+    fn select_for_account(
+        &self,
+        _: &AttemptContext,
+        _: &ProviderKind,
+        _: &UpstreamModelId,
+        account: &ProviderAccountId,
+    ) -> Result<
+        Option<Arc<dyn gateway_core::engine::upstream_adapter::UpstreamAdapter>>,
+        gateway_core::error::ProviderError,
+    > {
+        assert_eq!(account.as_str(), "acct_provider");
+        Ok(Some(Arc::new(Self {
+            polls: self.polls.clone(),
+            account_scoped: self.account_scoped,
         })))
     }
 }
@@ -4476,7 +4498,7 @@ impl gateway_core::engine::upstream_adapter::UpstreamAdapter for AdapterProbe {
 
 #[tokio::test]
 async fn upstream_adapter_reuses_selected_native_account_inside_attempt_onion_and_stays_cold() {
-    assert_upstream_adapter_stays_cold(operation()).await;
+    assert_upstream_adapter_stays_cold(operation(), false).await;
     for protocol in ["openai", "example-source"] {
         let operation = Operation::Generate(GenerateRequest::from_protocol_payload(
             ProtocolPayload::json_object(
@@ -4485,11 +4507,16 @@ async fn upstream_adapter_reuses_selected_native_account_inside_attempt_onion_an
             )
             .unwrap(),
         ));
-        assert_upstream_adapter_stays_cold(operation).await;
+        assert_upstream_adapter_stays_cold(operation, false).await;
     }
 }
 
-async fn assert_upstream_adapter_stays_cold(operation: Operation) {
+#[tokio::test]
+async fn account_scoped_upstream_adapter_is_resolved_after_xai_selection() {
+    assert_upstream_adapter_stays_cold(operation(), true).await;
+}
+
+async fn assert_upstream_adapter_stays_cold(operation: Operation, account_scoped: bool) {
     let selector = StubSelector::success();
     let transport = StubInferenceTransport::success();
     let provider = provider(selector.clone(), transport.clone()).await;
@@ -4515,6 +4542,7 @@ async fn assert_upstream_adapter_stays_cold(operation: Operation) {
             gateway_core::engine::upstream_adapter::FrozenUpstreamAdapterPlan::new(
                 Arc::new(AdapterProbe {
                     polls: polls.clone(),
+                    account_scoped,
                 }),
                 lease.clone(),
             ),

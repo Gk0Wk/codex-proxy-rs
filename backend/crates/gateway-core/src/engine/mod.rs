@@ -576,10 +576,41 @@ impl AttemptContext {
         provider: &ProviderKind,
         model: &UpstreamModelId,
     ) -> Result<Option<Arc<dyn upstream_adapter::UpstreamAdapter>>, ProviderError> {
+        let account = self
+            .required_account()
+            .or_else(|| match self.continuation_attempt() {
+                ContinuationAttempt::Native => self
+                    .continuation()
+                    .and_then(continuation::ContinuationBinding::pinned)
+                    .map(|pin| pin.account()),
+                ContinuationAttempt::ReplayOwner => self
+                    .account_state_owner()
+                    .filter(|owner| owner.provider() == provider)
+                    .map(|owner| owner.account()),
+                ContinuationAttempt::None | ContinuationAttempt::ReplayAny => None,
+            });
+        if let Some(account) = account {
+            return self.upstream_adapter_for_account(provider, model, account);
+        }
         self.request
             .upstream_adapters
             .as_ref()
             .map_or(Ok(None), |plan| plan.select(self, provider, model))
+    }
+
+    /// 账号候选资格检查和最终执行解析使用同一冻结计划，不调用插件进程
+    pub fn upstream_adapter_for_account(
+        &self,
+        provider: &ProviderKind,
+        model: &UpstreamModelId,
+        account: &ProviderAccountId,
+    ) -> Result<Option<Arc<dyn upstream_adapter::UpstreamAdapter>>, ProviderError> {
+        self.request
+            .upstream_adapters
+            .as_ref()
+            .map_or(Ok(None), |plan| {
+                plan.select_for_account(self, provider, model, account)
+            })
     }
 
     #[must_use]

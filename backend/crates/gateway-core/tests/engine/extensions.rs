@@ -89,3 +89,98 @@ fn execution_index_does_not_own_registered_generations() {
     assert!(index.middleware(&reference).is_none());
     assert!(index.upstream_adapters(&reference).is_none());
 }
+
+#[derive(Debug, Default)]
+struct AccountSelectionProbe(std::sync::Mutex<Vec<Option<String>>>);
+
+impl UpstreamAdapterPlan for AccountSelectionProbe {
+    fn select(
+        &self,
+        _: &AttemptContext,
+        _: &ProviderKind,
+        _: &UpstreamModelId,
+    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
+        self.0.lock().unwrap().push(None);
+        Ok(None)
+    }
+
+    fn select_for_account(
+        &self,
+        _: &AttemptContext,
+        _: &ProviderKind,
+        _: &UpstreamModelId,
+        account: &gateway_core::account::ProviderAccountId,
+    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
+        self.0.lock().unwrap().push(Some(account.as_str().into()));
+        Ok(None)
+    }
+}
+
+#[test]
+fn adapter_preselection_follows_only_the_current_attempt_account_owner() {
+    use gateway_core::{
+        account::{AccountSelectionPolicy, ProviderAccountId, RotationStrategy},
+        engine::continuation::{ContinuationBinding, NativeContinuationPin, PreviousResponseId},
+        engine::upstream_adapter::FrozenUpstreamAdapterPlan,
+        engine::{
+            AccountAttemptContext, ContinuationAttempt, ModelRequestId, RequestAttemptContext,
+        },
+        lifecycle::CancellationToken,
+        policy::ClientApiKeyId,
+    };
+    use std::{
+        num::NonZeroU32,
+        time::{Duration, SystemTime},
+    };
+
+    let provider = ProviderKind::new("openai").unwrap();
+    let model = UpstreamModelId::new("model").unwrap();
+    let key = ClientApiKeyId::new("key").unwrap();
+    let pin = NativeContinuationPin::new(
+        PreviousResponseId::new("public"),
+        PreviousResponseId::new("upstream"),
+        key.clone(),
+        provider.clone(),
+        ProviderAccountId::new("acct_pinned").unwrap(),
+    );
+    for (attempt, required, expected) in [
+        (ContinuationAttempt::Native, None, Some("acct_pinned")),
+        (ContinuationAttempt::ReplayAny, None, None),
+        (ContinuationAttempt::None, None, None),
+        (
+            ContinuationAttempt::Native,
+            Some("acct_required"),
+            Some("acct_required"),
+        ),
+    ] {
+        let probe = Arc::new(AccountSelectionProbe::default());
+        let context = AttemptContext::new(
+            RequestAttemptContext::new(
+                ModelRequestId::new("req_account_plan").unwrap(),
+                key.clone(),
+            )
+            .with_upstream_adapters(Some(FrozenUpstreamAdapterPlan::new(
+                probe.clone(),
+                reference("account-plan"),
+            ))),
+            NonZeroU32::MIN,
+            SystemTime::now() + Duration::from_secs(5),
+            AccountSelectionPolicy::new(RotationStrategy::RoundRobin, NonZeroU32::MIN),
+            AccountAttemptContext::new(
+                Default::default(),
+                required.map(|id| ProviderAccountId::new(id).unwrap()),
+                None,
+            ),
+            Some(ContinuationBinding::Pinned(pin.clone())),
+            CancellationToken::new(),
+        )
+        .with_continuation_attempt(attempt);
+        assert!(
+            context
+                .upstream_adapter(&provider, &model)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(*probe.0.lock().unwrap(), vec![expected.map(str::to_owned)]);
+    }
+}
