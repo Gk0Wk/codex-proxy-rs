@@ -55,7 +55,7 @@ RPC v5 的帧布局、编码与会话生命周期见[通信边界](../README.md#
 | --- | --- |
 | `middleware` | `5` |
 | `scheduler` | `3` |
-| `upstream_adapter` | `4`、`5`（账号范围） |
+| `upstream_adapter` | `5` |
 | `frontend_authentication`、`model_router`、`retry_policy`、`observer`、`management` | `2` |
 | `model_catalog`、`command_line`、`maintenance` | `1` |
 

@@ -88,7 +88,7 @@ impl UpstreamAccountConnection for Account {
 
 fn configuration(base: &str, streaming: bool) -> Value {
     json!({
-        "upstream_registration":{"adapters":[{"id":"example","provider":"openai","base_url":format!("{base}/adapter/"),"paths":[{"path":"responses","purpose":"inference"}],"authentication_kinds":["oauth"],"transport":if streaming {"http_sse"} else {"http_json"},"protocol":"openai"}]},
+        "upstream_registration":{"adapters":[{"id":"example","provider":"openai","base_url":format!("{base}/adapter/"),"paths":[{"path":"responses","purpose":"inference"}],"authentication_kinds":["oauth"],"account_ids":[],"transport":if streaming {"http_sse"} else {"http_json"},"protocol":"openai"}]},
         "upstream_callbacks":[{"method":if streaming {"host.upstream.http.do_stream"} else {"host.upstream.http.do"},"params":{"method":"POST","path":"responses","headers":[["content-type",b"application/json".to_vec()]]},"body":"request"}],
         "upstream_events":[
             {"event":{"facts":[{"type":"started","id":"response-one","model":"native-model"}]}},
@@ -115,25 +115,12 @@ async fn setup_with_limits(
     Arc<super::Store>,
     gateway_plugin_runtime::PluginRuntime,
 ) {
-    setup_with_version(config, limits, 4).await
-}
-
-async fn setup_with_version(
-    config: Value,
-    limits: gateway_plugin_runtime::RpcLimits,
-    version: u32,
-) -> (
-    tempfile::TempDir,
-    Arc<super::Store>,
-    gateway_plugin_runtime::PluginRuntime,
-) {
-    let (capability, mut contribution) = crate::support::contribution(
+    let (capability, contribution) = crate::support::contribution(
         Capability::UpstreamAdapter,
         vec![Stage::Upstream],
         vec!["openai".into()],
         vec!["openai".into()],
     );
-    contribution.version = version;
     let contributes = Contributions::from([(capability, contribution)]);
     let (cache, store, runtime) =
         super::setup_with_limits(contributes, Default::default(), limits).await;
@@ -261,7 +248,7 @@ async fn account_scoped_preselection_keeps_fallback_failures_within_matching_acc
     for fallback_first in [false, true] {
         let mut config = configuration("https://example.invalid", false);
         config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
-        let (cache, store, runtime) = setup_with_version(config, Default::default(), 5).await;
+        let (cache, store, runtime) = setup(config).await;
         {
             let mut snapshot = store.snapshot.lock().unwrap();
             let mut fallback = snapshot.instances[0].clone();
@@ -342,7 +329,7 @@ async fn account_scoped_adapters_share_a_model_without_sharing_their_targets() {
         .as_array_mut()
         .unwrap()
         .push(second_declaration);
-    let (cache, _, runtime) = setup_with_version(config, Default::default(), 5).await;
+    let (cache, _, runtime) = setup(config).await;
     let generation = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
         .await
         .unwrap();
@@ -1006,40 +993,38 @@ async fn adapter_does_not_publish_completed_when_rpc_fails_after_terminal_frame(
 
 #[tokio::test]
 async fn overlapping_adapter_declarations_keep_first_match_without_blocking_preparation() {
-    verify_overlapping_declarations(4, false).await;
-    verify_overlapping_declarations(5, true).await;
-}
-
-async fn verify_overlapping_declarations(version: u32, scoped: bool) {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/adapter/responses"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let mut config = configuration(&server.uri(), false);
-    if scoped {
-        config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
+    for scoped in [false, true] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/adapter/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut config = configuration(&server.uri(), false);
+        if scoped {
+            config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
+        }
+        let mut duplicate = config["upstream_registration"]["adapters"][0].clone();
+        duplicate["base_url"] = json!("https://unused.invalid/adapter/");
+        config["upstream_registration"]["adapters"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        let (cache, _, runtime) = setup(config).await;
+        let generation =
+            ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
+                .await
+                .unwrap();
+        let mut stream = execute(&runtime, &generation, Account::new(), "key-one", None);
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
+        drop(stream);
+        drop(generation);
+        runtime.shutdown().await;
+        super::wait_until_empty(cache.path()).await;
     }
-    let mut duplicate = config["upstream_registration"]["adapters"][0].clone();
-    duplicate["base_url"] = json!("https://unused.invalid/adapter/");
-    config["upstream_registration"]["adapters"]
-        .as_array_mut()
-        .unwrap()
-        .push(duplicate);
-    let (cache, _, runtime) = setup_with_version(config, Default::default(), version).await;
-    let generation = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
-        .await
-        .unwrap();
-    let mut stream = execute(&runtime, &generation, Account::new(), "key-one", None);
-    while let Some(event) = stream.next().await {
-        event.unwrap();
-    }
-    drop(stream);
-    drop(generation);
-    runtime.shutdown().await;
-    super::wait_until_empty(cache.path()).await;
 }
 
 #[tokio::test]
@@ -1075,21 +1060,21 @@ async fn adapter_registration_preserves_plugin_targets_with_typed_provider_decod
 }
 
 #[tokio::test]
-async fn account_scoped_registration_requires_the_v5_contract() {
-    for (version, allowed) in [(4, false), (5, true)] {
-        let mut config = configuration("https://example.invalid", false);
-        config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
-        let (cache, store, runtime) = setup_with_version(config, Default::default(), version).await;
-        let snapshot = store.snapshot.lock().unwrap().clone();
-        assert_eq!(
-            gateway_admin::ports::plugins::PluginPreparation::prepare(&runtime, snapshot)
-                .await
-                .is_ok(),
-            allowed
-        );
-        runtime.shutdown().await;
-        super::wait_until_empty(cache.path()).await;
-    }
+async fn adapter_registration_requires_explicit_account_scope() {
+    let mut config = configuration("https://example.invalid", false);
+    config["upstream_registration"]["adapters"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("account_ids");
+    let (cache, store, runtime) = setup(config).await;
+    let snapshot = store.snapshot.lock().unwrap().clone();
+    assert!(
+        gateway_admin::ports::plugins::PluginPreparation::prepare(&runtime, snapshot)
+            .await
+            .is_err()
+    );
+    runtime.shutdown().await;
+    super::wait_until_empty(cache.path()).await;
 }
 
 #[tokio::test]
@@ -1097,7 +1082,7 @@ async fn account_scoped_adapter_rechecks_the_invocation_account_before_sending()
     let server = MockServer::start().await;
     let mut config = configuration(&server.uri(), false);
     config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
-    let (cache, _, runtime) = setup_with_version(config, Default::default(), 5).await;
+    let (cache, _, runtime) = setup(config).await;
     let generation = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
         .await
         .unwrap();
@@ -1406,194 +1391,191 @@ async fn usage_without_response_model_still_uses_native_account_pricing() {
 #[tokio::test]
 async fn core_published_adapter_uses_normal_attempt_usage_and_cost_ledger() {
     use crate::support::environment::Environment;
-    let Some(mut environment) = Environment::create_command().await else {
-        eprintln!("SKIP: plugin integration environment absent");
-        return;
-    };
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(header("authorization", "Bearer fixture-native-token"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let account = environment.account(None).await;
-    let group = environment.account_group_with_account(&account).await;
-    let key_id = "key_adapter_ledger";
-    environment
-        .client_key_with_limits_and_groups(
-            key_id,
-            "sk-adapter-ledger-fixture",
-            gateway_core::policy::RateLimits::unlimited(),
-            vec![group],
-        )
-        .await;
-    environment
-        .install_plugin(configuration(&server.uri(), false))
-        .await;
-    environment.install_plugin(json!({
-        "plugin_id":"test.adapter-ledger-caller",
-        "command_registration":{"commands":[{"name":"run","description":"执行模型"}]},
-        "command_nested_model_fixture":{
-            "request":{"client_key_id":key_id,"model":crate::support::native::MODEL,"protocol":"openai","operation":"generate","provider":"openai","account_id":account.as_str()},
-            "body":{"model":crate::support::native::MODEL,"input":"adapter ledger"}
-        },
-        "command_result":{"stdout":"ok","stderr":"","exit_code":0}
-    })).await;
-    let (runtime, core) = environment.command_plane().await;
-    let snapshot = environment
-        .store
-        .admin_ports()
-        .plugins()
-        .load_instances()
-        .await
-        .unwrap();
-    let caller = snapshot
-        .instances
-        .iter()
-        .find(|instance| instance.configuration.get("command_registration").is_some())
-        .unwrap();
-    let commands = runtime.prepare_command_line().await.unwrap();
-    environment.store.start_command_line_writes().unwrap();
-    let result = commands.execute(&caller.id, "run", &[]).await.unwrap();
-    assert_eq!(result.stdout, "ok");
-    commands.shutdown().await;
-    environment
-        .store
-        .shutdown_command_line_writes()
-        .await
-        .unwrap();
-    environment
-        .assert_upstream_accounting(key_id, account.as_str())
-        .await;
-    drop(core);
-    drop(runtime);
-    environment.close().await;
+    for scoped in [false, true] {
+        let Some(mut environment) = Environment::create_command().await else {
+            eprintln!("SKIP: plugin integration environment absent");
+            return;
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("authorization", "Bearer fixture-native-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let account = environment.account(None).await;
+        let group = environment.account_group_with_account(&account).await;
+        let key_id = "key_adapter_ledger";
+        environment
+            .client_key_with_limits_and_groups(
+                key_id,
+                "sk-adapter-ledger-fixture",
+                gateway_core::policy::RateLimits::unlimited(),
+                vec![group],
+            )
+            .await;
+        let mut adapter_config = configuration(&server.uri(), false);
+        if scoped {
+            adapter_config["upstream_registration"]["adapters"][0]["account_ids"] =
+                json!([account.as_str()]);
+        }
+        environment.install_plugin(adapter_config).await;
+        environment.install_plugin(json!({
+            "plugin_id":"test.adapter-ledger-caller",
+            "command_registration":{"commands":[{"name":"run","description":"执行模型"}]},
+            "command_nested_model_fixture":{
+                "request":{"client_key_id":key_id,"model":crate::support::native::MODEL,"protocol":"openai","operation":"generate","provider":"openai","account_id":account.as_str()},
+                "body":{"model":crate::support::native::MODEL,"input":"adapter ledger"}
+            },
+            "command_result":{"stdout":"ok","stderr":"","exit_code":0}
+        })).await;
+        let (runtime, core) = environment.command_plane().await;
+        let snapshot = environment
+            .store
+            .admin_ports()
+            .plugins()
+            .load_instances()
+            .await
+            .unwrap();
+        let caller = snapshot
+            .instances
+            .iter()
+            .find(|instance| instance.configuration.get("command_registration").is_some())
+            .unwrap();
+        let commands = runtime.prepare_command_line().await.unwrap();
+        environment.store.start_command_line_writes().unwrap();
+        let result = commands.execute(&caller.id, "run", &[]).await.unwrap();
+        assert_eq!(result.stdout, "ok");
+        commands.shutdown().await;
+        environment
+            .store
+            .shutdown_command_line_writes()
+            .await
+            .unwrap();
+        environment
+            .assert_upstream_accounting(key_id, account.as_str())
+            .await;
+        drop(core);
+        drop(runtime);
+        environment.close().await;
+    }
 }
 
 #[tokio::test]
 async fn adapter_reconfiguration_disable_and_rollback_keep_inflight_generation_and_reap_workers() {
-    verify_adapter_reconfiguration(4).await;
-    verify_adapter_reconfiguration(5).await;
-}
-
-async fn verify_adapter_reconfiguration(version: u32) {
-    let scoped_configuration = |base: &str| {
-        let mut config = configuration(base, false);
-        if version >= 5 {
-            config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
+    for scoped in [false, true] {
+        let scoped_configuration = |base: &str| {
+            let mut config = configuration(base, false);
+            if scoped {
+                config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
+            }
+            config
+        };
+        let original = MockServer::start().await;
+        let replacement = MockServer::start().await;
+        for (server, expected) in [(&original, 2), (&replacement, 1)] {
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+                .expect(expected)
+                .mount(server)
+                .await;
         }
-        config
-    };
-    let original = MockServer::start().await;
-    let replacement = MockServer::start().await;
-    for (server, expected) in [(&original, 2), (&replacement, 1)] {
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
-            .expect(expected)
-            .mount(server)
-            .await;
-    }
-    let (cache, store, runtime) = setup_with_version(
-        scoped_configuration(&original.uri()),
-        Default::default(),
-        version,
-    )
-    .await;
-    let old = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
-        .await
-        .unwrap();
-    let account = Account::new();
-    let mut old_stream = execute(&runtime, &old, account.clone(), "key-one", None);
-    old_stream.next().await.unwrap().unwrap();
-    {
-        let mut snapshot = store.snapshot.lock().unwrap();
-        snapshot.config_revision = gateway_admin::model::Revision::new(2).unwrap();
-        snapshot.instances[0].revision = snapshot.config_revision;
-        snapshot.instances[0].configuration = scoped_configuration(&replacement.uri());
-    }
-    let new = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(2).unwrap())
-        .await
-        .unwrap();
-    assert_ne!(old.id(), new.id());
-    let mut new_stream = execute(&runtime, &new, account.clone(), "key-one", None);
-    new_stream.next().await.unwrap().unwrap();
-    drop(old);
-    let old_state = old_stream
-        .next()
-        .await
-        .unwrap()
-        .unwrap()
-        .take_session_update()
-        .unwrap();
-    assert!(old_stream.next().await.is_none());
-    drop(old_stream);
-    {
-        let mut snapshot = store.snapshot.lock().unwrap();
-        snapshot.config_revision = gateway_admin::model::Revision::new(3).unwrap();
-        snapshot.instances[0].revision = snapshot.config_revision;
-        snapshot.instances[0].enabled = false;
-    }
-    let disabled = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(3).unwrap())
-        .await
-        .unwrap();
-    assert!(matches!(
-        context(&runtime, &disabled, "key-one")
-            .upstream_adapter(
-                &ProviderKind::new("openai").unwrap(),
-                &UpstreamModelId::new("native-model").unwrap()
-            )
-            .unwrap(),
-        UpstreamAdapterSelection::Native
-    ));
-    drop(new);
-    assert!(
-        new_stream
+        let (cache, store, runtime) = setup(scoped_configuration(&original.uri())).await;
+        let old = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
+            .await
+            .unwrap();
+        let account = Account::new();
+        let mut old_stream = execute(&runtime, &old, account.clone(), "key-one", None);
+        old_stream.next().await.unwrap().unwrap();
+        {
+            let mut snapshot = store.snapshot.lock().unwrap();
+            snapshot.config_revision = gateway_admin::model::Revision::new(2).unwrap();
+            snapshot.instances[0].revision = snapshot.config_revision;
+            snapshot.instances[0].configuration = scoped_configuration(&replacement.uri());
+        }
+        let new = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(2).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(old.id(), new.id());
+        let mut new_stream = execute(&runtime, &new, account.clone(), "key-one", None);
+        new_stream.next().await.unwrap().unwrap();
+        drop(old);
+        let old_state = old_stream
             .next()
             .await
             .unwrap()
             .unwrap()
-            .canonical_facts()
-            .iter()
-            .any(|fact| matches!(fact, GatewayEvent::Completed(_)))
-    );
-    assert!(new_stream.next().await.is_none());
-    drop(new_stream);
-    drop(disabled);
-    super::wait_until_empty(cache.path()).await;
-    assert_eq!(Arc::strong_count(&account), 1);
-    {
-        let mut snapshot = store.snapshot.lock().unwrap();
-        snapshot.config_revision = gateway_admin::model::Revision::new(4).unwrap();
-        snapshot.instances[0].revision = snapshot.config_revision;
-        snapshot.instances[0].enabled = true;
-        snapshot.instances[0].configuration = scoped_configuration(&original.uri());
-    }
-    let restored = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(4).unwrap())
+            .take_session_update()
+            .unwrap();
+        assert!(old_stream.next().await.is_none());
+        drop(old_stream);
+        {
+            let mut snapshot = store.snapshot.lock().unwrap();
+            snapshot.config_revision = gateway_admin::model::Revision::new(3).unwrap();
+            snapshot.instances[0].revision = snapshot.config_revision;
+            snapshot.instances[0].enabled = false;
+        }
+        let disabled = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(3).unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(
+            context(&runtime, &disabled, "key-one")
+                .upstream_adapter(
+                    &ProviderKind::new("openai").unwrap(),
+                    &UpstreamModelId::new("native-model").unwrap()
+                )
+                .unwrap(),
+            UpstreamAdapterSelection::Native
+        ));
+        drop(new);
+        assert!(
+            new_stream
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .canonical_facts()
+                .iter()
+                .any(|fact| matches!(fact, GatewayEvent::Completed(_)))
+        );
+        assert!(new_stream.next().await.is_none());
+        drop(new_stream);
+        drop(disabled);
+        super::wait_until_empty(cache.path()).await;
+        assert_eq!(Arc::strong_count(&account), 1);
+        {
+            let mut snapshot = store.snapshot.lock().unwrap();
+            snapshot.config_revision = gateway_admin::model::Revision::new(4).unwrap();
+            snapshot.instances[0].revision = snapshot.config_revision;
+            snapshot.instances[0].enabled = true;
+            snapshot.instances[0].configuration = scoped_configuration(&original.uri());
+        }
+        let restored = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(4).unwrap())
+            .await
+            .unwrap();
+        // 恢复同一配置仍是新代次，不能复活旧进程中的续接身份
+        let error = execute(
+            &runtime,
+            &restored,
+            account.clone(),
+            "key-one",
+            Some(old_state),
+        )
+        .next()
         .await
-        .unwrap();
-    // 恢复同一配置仍是新代次，不能复活旧进程中的续接身份
-    let error = execute(
-        &runtime,
-        &restored,
-        account.clone(),
-        "key-one",
-        Some(old_state),
-    )
-    .next()
-    .await
-    .unwrap()
-    .unwrap_err();
-    assert_eq!(error.send_state(), UpstreamSendState::NotSent);
-    let mut fresh = execute(&runtime, &restored, account.clone(), "key-one", None);
-    while let Some(event) = fresh.next().await {
-        event.unwrap();
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+        let mut fresh = execute(&runtime, &restored, account.clone(), "key-one", None);
+        while let Some(event) = fresh.next().await {
+            event.unwrap();
+        }
+        drop(fresh);
+        drop(restored);
+        runtime.shutdown().await;
+        super::wait_until_empty(cache.path()).await;
+        assert_eq!(Arc::strong_count(&account), 1);
     }
-    drop(fresh);
-    drop(restored);
-    runtime.shutdown().await;
-    super::wait_until_empty(cache.path()).await;
-    assert_eq!(Arc::strong_count(&account), 1);
 }
 
 #[tokio::test]

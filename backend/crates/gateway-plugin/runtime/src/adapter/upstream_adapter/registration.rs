@@ -76,9 +76,6 @@ pub(crate) async fn prepare(
         .find(|binding| binding.contribution == contribution.id);
     let mut entries = Vec::new();
     for declaration in registration.adapters {
-        if contribution.version < 5 && !declaration.account_ids.is_empty() {
-            return Err(AdminError::invalid("账号范围需要 upstream_adapter v5"));
-        }
         let target = Arc::new(UpstreamTarget::compile(&declaration)?);
         if let Some(binding) = binding {
             entries.push(AdapterEntry {
