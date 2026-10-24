@@ -39,9 +39,9 @@ impl RequestPolicyPlan for Filter {
 }
 
 #[derive(Debug)]
-struct PreferFirstAdapterAccount;
+struct PreferAdapterAccount(ProviderAccountId);
 
-impl RequestPolicyPlan for PreferFirstAdapterAccount {
+impl RequestPolicyPlan for PreferAdapterAccount {
     fn route_model(
         &self,
         _: ModelRouteInput,
@@ -53,7 +53,7 @@ impl RequestPolicyPlan for PreferFirstAdapterAccount {
         &self,
         input: AccountScheduleInput,
     ) -> BoxFuture<'static, Result<AccountScheduleDecision, RequestPolicyFault>> {
-        let preferred = account_id("adapter-filter-a");
+        let preferred = self.0.clone();
         let decision = if input
             .candidates()
             .iter()
@@ -68,14 +68,15 @@ impl RequestPolicyPlan for PreferFirstAdapterAccount {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum AdapterIneligibility {
+enum AdapterState {
+    Available,
     Unavailable,
     AuthenticationMismatch,
 }
 
 #[derive(Debug)]
 struct AccountEligibilityPlan {
-    ineligibility: AdapterIneligibility,
+    state: AdapterState,
     polls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -85,58 +86,50 @@ impl gateway_core::engine::upstream_adapter::UpstreamAdapterPlan for AccountElig
         _: &AttemptContext,
         _: &ProviderKind,
         _: &UpstreamModelId,
-    ) -> Result<
-        Option<Arc<dyn gateway_core::engine::upstream_adapter::UpstreamAdapter>>,
-        ProviderError,
-    > {
-        Ok(None)
-    }
-
-    fn select_for_account(
-        &self,
-        _: &AttemptContext,
-        _: &ProviderKind,
-        _: &UpstreamModelId,
-        account: &ProviderAccountId,
-    ) -> Result<
-        Option<Arc<dyn gateway_core::engine::upstream_adapter::UpstreamAdapter>>,
-        ProviderError,
-    > {
+        account: Option<&ProviderAccountId>,
+    ) -> Result<UpstreamAdapterSelection, ProviderError> {
+        let Some(account) = account else {
+            return Ok(UpstreamAdapterSelection::PendingAccount);
+        };
         if account != &account_id("adapter-filter-a") {
-            return Ok(None);
+            return Ok(UpstreamAdapterSelection::Native);
         }
-        match self.ineligibility {
-            AdapterIneligibility::Unavailable => Err(ProviderError::new(
+        match self.state {
+            AdapterState::Unavailable => Err(ProviderError::new(
                 ProviderErrorKind::Unavailable,
                 UpstreamSendState::NotSent,
             )),
-            AdapterIneligibility::AuthenticationMismatch => Ok(Some(Arc::new(IneligibleAdapter {
-                polls: Arc::clone(&self.polls),
-            }))),
+            AdapterState::Available | AdapterState::AuthenticationMismatch => Ok(
+                UpstreamAdapterSelection::Adapter(Arc::new(AccountAdapter {
+                    supports_authentication: matches!(self.state, AdapterState::Available),
+                    polls: Arc::clone(&self.polls),
+                })),
+            ),
         }
     }
 }
 
 #[derive(Debug)]
-struct IneligibleAdapter {
+struct AccountAdapter {
+    supports_authentication: bool,
     polls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl gateway_core::engine::upstream_adapter::UpstreamAdapter for IneligibleAdapter {
+impl gateway_core::engine::upstream_adapter::UpstreamAdapter for AccountAdapter {
     fn transport(&self) -> &str {
         "http_sse"
     }
 
     fn supports_authentication(&self, _: &str) -> bool {
-        false
+        self.supports_authentication
     }
 
     fn execute(
         self: Arc<Self>,
         _: gateway_core::engine::upstream_adapter::UpstreamAdapterInvocation,
     ) -> gateway_core::engine::provider::EventStream {
-        self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Box::pin(futures::stream::once(async {
+        Box::pin(futures::stream::once(async move {
+            self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Err(ProviderError::new(
                 ProviderErrorKind::Cancelled,
                 UpstreamSendState::NotSent,
@@ -379,10 +372,14 @@ async fn filtered_scheduling_covers_lease_retry_waiting_and_pinned_terminal_reje
 }
 
 #[tokio::test]
-async fn account_scoped_adapter_filters_unavailable_and_authentication_incompatible_accounts() {
-    for ineligibility in [
-        AdapterIneligibility::Unavailable,
-        AdapterIneligibility::AuthenticationMismatch,
+async fn account_scoped_adapter_filters_candidates_by_adapter_and_native_request_eligibility() {
+    for (state, prewarm) in [
+        (AdapterState::Available, false),
+        (AdapterState::Unavailable, false),
+        (AdapterState::AuthenticationMismatch, false),
+        (AdapterState::Available, true),
+        (AdapterState::Unavailable, true),
+        (AdapterState::AuthenticationMismatch, true),
     ] {
         let store = MemoryProviderAccountStore::shared();
         let repository = GrokCredentialRepository::new(store.clone());
@@ -439,7 +436,13 @@ async fn account_scoped_adapter_filters_unavailable_and_authentication_incompati
         let id = ModelRequestId::new("req_xai_adapter_filter").unwrap();
         let key = ClientApiKeyId::new("key_xai_contract").unwrap();
         let policy = RequestPolicyContext::new(
-            Arc::new(PreferFirstAdapterAccount),
+            Arc::new(PreferAdapterAccount(account_id(
+                if matches!(state, AdapterState::Available) {
+                    "adapter-filter-b"
+                } else {
+                    "adapter-filter-a"
+                },
+            ))),
             ExtensionSetReference::new(
                 ExtensionSetId::new("adapter-filter-policy".into()).unwrap(),
                 Arc::new(TestExtensionLease),
@@ -451,7 +454,7 @@ async fn account_scoped_adapter_filters_unavailable_and_authentication_incompati
         let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let adapter_plan = gateway_core::engine::upstream_adapter::FrozenUpstreamAdapterPlan::new(
             Arc::new(AccountEligibilityPlan {
-                ineligibility,
+                state,
                 polls: Arc::clone(&polls),
             }),
             ExtensionSetReference::new(
@@ -463,7 +466,17 @@ async fn account_scoped_adapter_filters_unavailable_and_authentication_incompati
             Arc::new(RuntimeAccountDirectory::new(accounts)),
             ClientRoutingScope::all_accounts(),
         ));
-        let operation = operation();
+        let operation = if prewarm {
+            Operation::Generate(GenerateRequest::from_protocol_payload(
+                ProtocolPayload::json_object(
+                    "openai",
+                    object(json!({"model": MODEL, "input": "hello", "generate": false})),
+                )
+                .unwrap(),
+            ))
+        } else {
+            operation()
+        };
         let snapshot = RuntimeSnapshot::new(
             ConfigRevision::new(1).unwrap(),
             gateway_core::settings::SettingsValues::new(2, "smart", Default::default(), None, None),
@@ -498,14 +511,29 @@ async fn account_scoped_adapter_filters_unavailable_and_authentication_incompati
             CancellationToken::new(),
         );
 
-        let stream = provider
-            .execute(request, attempt)
-            .await
-            .expect("eligible account remains available");
+        let result = provider.execute(request, attempt).await;
+        if prewarm && !matches!(state, AdapterState::Available) {
+            assert_eq!(
+                result
+                    .err()
+                    .expect("no adapter can accept the prewarm request")
+                    .kind(),
+                ProviderErrorKind::Unsupported
+            );
+            assert!(leases.acquired.lock().unwrap().is_empty());
+            assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            continue;
+        }
+        let mut stream = result.expect("eligible account remains available");
+        let selected_account = account_id(if prewarm {
+            "adapter-filter-a"
+        } else {
+            "adapter-filter-b"
+        });
         assert_eq!(
             stream.metadata().provider_account_id(),
-            &account_id("adapter-filter-b"),
-            "{ineligibility:?}"
+            &selected_account,
+            "{state:?}"
         );
         assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(
@@ -514,8 +542,15 @@ async fn account_scoped_adapter_filters_unavailable_and_authentication_incompati
                 .lock()
                 .unwrap()
                 .iter()
-                .all(|account| account != &account_id("adapter-filter-a"))
+                .all(|account| account == &selected_account)
         );
+        if prewarm {
+            assert_eq!(
+                stream.next().await.unwrap().unwrap_err().kind(),
+                ProviderErrorKind::Cancelled
+            );
+            assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
         drop(stream);
     }
 }

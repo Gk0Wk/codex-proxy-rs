@@ -26,6 +26,7 @@ use gateway_core::engine::middleware::{
     MiddlewareNext, MiddlewarePlan, MiddlewareRequest, MiddlewareResponse,
 };
 use gateway_core::engine::provider::{Provider, ProviderRequest};
+use gateway_core::engine::upstream_adapter::UpstreamAdapterSelection;
 use gateway_core::engine::{
     AccountAttemptContext, AttemptContext, ContinuationAttempt, ModelRequestId,
 };
@@ -4404,32 +4405,16 @@ impl gateway_core::engine::upstream_adapter::UpstreamAdapterPlan for AdapterProb
         _: &AttemptContext,
         provider: &ProviderKind,
         _: &UpstreamModelId,
-    ) -> Result<
-        Option<Arc<dyn gateway_core::engine::upstream_adapter::UpstreamAdapter>>,
-        gateway_core::error::ProviderError,
-    > {
+        account: Option<&ProviderAccountId>,
+    ) -> Result<UpstreamAdapterSelection, gateway_core::error::ProviderError> {
         assert_eq!(provider.as_str(), "xai");
-        if self.account_scoped {
-            return Ok(None);
+        if self.account_scoped && account.is_none() {
+            return Ok(UpstreamAdapterSelection::PendingAccount);
         }
-        Ok(Some(Arc::new(Self {
-            polls: self.polls.clone(),
-            account_scoped: self.account_scoped,
-        })))
-    }
-
-    fn select_for_account(
-        &self,
-        _: &AttemptContext,
-        _: &ProviderKind,
-        _: &UpstreamModelId,
-        account: &ProviderAccountId,
-    ) -> Result<
-        Option<Arc<dyn gateway_core::engine::upstream_adapter::UpstreamAdapter>>,
-        gateway_core::error::ProviderError,
-    > {
-        assert_eq!(account.as_str(), "acct_provider");
-        Ok(Some(Arc::new(Self {
+        if let Some(account) = account {
+            assert_eq!(account.as_str(), "acct_provider");
+        }
+        Ok(UpstreamAdapterSelection::Adapter(Arc::new(Self {
             polls: self.polls.clone(),
             account_scoped: self.account_scoped,
         })))
@@ -4498,22 +4483,19 @@ impl gateway_core::engine::upstream_adapter::UpstreamAdapter for AdapterProbe {
 
 #[tokio::test]
 async fn upstream_adapter_reuses_selected_native_account_inside_attempt_onion_and_stays_cold() {
-    assert_upstream_adapter_stays_cold(operation(), false).await;
-    for protocol in ["openai", "example-source"] {
-        let operation = Operation::Generate(GenerateRequest::from_protocol_payload(
-            ProtocolPayload::json_object(
-                protocol,
-                object(json!({"model": MODEL, "input": "hello", "generate": false})),
-            )
-            .unwrap(),
-        ));
-        assert_upstream_adapter_stays_cold(operation, false).await;
+    for account_scoped in [false, true] {
+        assert_upstream_adapter_stays_cold(operation(), account_scoped).await;
+        for protocol in ["openai", "example-source"] {
+            let operation = Operation::Generate(GenerateRequest::from_protocol_payload(
+                ProtocolPayload::json_object(
+                    protocol,
+                    object(json!({"model": MODEL, "input": "hello", "generate": false})),
+                )
+                .unwrap(),
+            ));
+            assert_upstream_adapter_stays_cold(operation, account_scoped).await;
+        }
     }
-}
-
-#[tokio::test]
-async fn account_scoped_upstream_adapter_is_resolved_after_xai_selection() {
-    assert_upstream_adapter_stays_cold(operation(), true).await;
 }
 
 async fn assert_upstream_adapter_stays_cold(operation: Operation, account_scoped: bool) {

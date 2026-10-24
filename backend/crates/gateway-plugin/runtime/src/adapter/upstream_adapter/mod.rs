@@ -1,4 +1,4 @@
-//! 将插件上游适配贡献编译为可按请求选择的执行计划
+//! 将插件上游适配贡献编译为按请求与账号范围解析的执行计划
 
 mod event;
 mod execution;
@@ -13,7 +13,10 @@ use gateway_core::{
     account::ProviderAccountId,
     engine::{
         AttemptContext,
-        upstream_adapter::{UpstreamAdapter, UpstreamAdapterInvocation, UpstreamAdapterPlan},
+        upstream_adapter::{
+            UpstreamAdapter, UpstreamAdapterInvocation, UpstreamAdapterPlan,
+            UpstreamAdapterSelection,
+        },
     },
     error::{ProviderError, ProviderErrorKind},
     identity::ProviderKind,
@@ -99,29 +102,8 @@ impl UpstreamAdapterPlan for PluginUpstreamAdapterPlan {
         context: &AttemptContext,
         provider: &ProviderKind,
         model: &UpstreamModelId,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
-        self.select_matching(context, provider, model, None)
-    }
-
-    fn select_for_account(
-        &self,
-        context: &AttemptContext,
-        provider: &ProviderKind,
-        model: &UpstreamModelId,
-        account: &ProviderAccountId,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
-        self.select_matching(context, provider, model, Some(account))
-    }
-}
-
-impl PluginUpstreamAdapterPlan {
-    fn select_matching(
-        &self,
-        context: &AttemptContext,
-        provider: &ProviderKind,
-        model: &UpstreamModelId,
         account: Option<&ProviderAccountId>,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
+    ) -> Result<UpstreamAdapterSelection, ProviderError> {
         let model = context
             .requested_model()
             .map_or(model.as_str(), |model| model.as_str());
@@ -137,17 +119,6 @@ impl PluginUpstreamAdapterPlan {
                 continue;
             }
             let adapter = entry.adapter.as_ref().ok_or_else(unavailable)?;
-            if !adapter.declaration.account_ids.is_empty()
-                && !account.is_some_and(|account| {
-                    adapter
-                        .declaration
-                        .account_ids
-                        .iter()
-                        .any(|id| id == account.as_str())
-                })
-            {
-                continue;
-            }
             if adapter.declaration.provider.as_str() == provider.as_str()
                 && (adapter.declaration.models.is_empty()
                     || adapter
@@ -156,13 +127,29 @@ impl PluginUpstreamAdapterPlan {
                         .iter()
                         .any(|candidate| candidate == model))
             {
+                if !adapter.declaration.account_ids.is_empty() {
+                    let Some(account) = account else {
+                        // 后置声明只覆盖未命中此账号范围的候选，不能提前以其故障拒绝整个请求
+                        return Ok(UpstreamAdapterSelection::PendingAccount);
+                    };
+                    if !adapter
+                        .declaration
+                        .account_ids
+                        .iter()
+                        .any(|id| id == account.as_str())
+                    {
+                        continue;
+                    }
+                }
                 if !adapter.session.is_ready() {
                     return Err(unavailable());
                 }
-                return Ok(Some(Arc::clone(adapter) as Arc<dyn UpstreamAdapter>));
+                return Ok(UpstreamAdapterSelection::Adapter(
+                    Arc::clone(adapter) as Arc<dyn UpstreamAdapter>
+                ));
             }
         }
-        Ok(None)
+        Ok(UpstreamAdapterSelection::Native)
     }
 }
 

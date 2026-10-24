@@ -18,7 +18,9 @@ use gateway_core::{
         AccountAttemptContext, AttemptContext, ModelRequestId, RequestAttemptContext,
         middleware::MiddlewareHeader,
         provider::{EventStream, ProviderCallMetadata},
-        upstream_adapter::{UpstreamAccountConnection, UpstreamAdapterInvocation},
+        upstream_adapter::{
+            UpstreamAccountConnection, UpstreamAdapterInvocation, UpstreamAdapterSelection,
+        },
     },
     error::{ProviderError, ProviderErrorKind},
     event::GatewayEvent,
@@ -255,6 +257,70 @@ fn execute_with_context(
 }
 
 #[tokio::test]
+async fn account_scoped_preselection_keeps_fallback_failures_within_matching_accounts() {
+    for fallback_first in [false, true] {
+        let mut config = configuration("https://example.invalid", false);
+        config["upstream_registration"]["adapters"][0]["account_ids"] = json!(["acct_one"]);
+        let (cache, store, runtime) = setup_with_version(config, Default::default(), 5).await;
+        {
+            let mut snapshot = store.snapshot.lock().unwrap();
+            let mut fallback = snapshot.instances[0].clone();
+            fallback.id = "instance-two".into();
+            fallback.name = "Fallback".into();
+            fallback.configuration = configuration("https://fallback.invalid", false);
+            fallback.configuration["upstream_registration"] = json!(false);
+            if fallback_first {
+                snapshot.instances.insert(0, fallback);
+            } else {
+                snapshot.instances.push(fallback);
+            }
+        }
+        let generation =
+            ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
+                .await
+                .unwrap();
+        {
+            let context = context(&runtime, &generation, "key-one");
+            let provider = ProviderKind::new("openai").unwrap();
+            let model = UpstreamModelId::new("native-model").unwrap();
+            let preselection = context.upstream_adapter(&provider, &model);
+            let selected = context.upstream_adapter_for_account(
+                &provider,
+                &model,
+                &ProviderAccountId::new("acct_one").unwrap(),
+            );
+            if !fallback_first {
+                assert!(matches!(
+                    preselection.unwrap(),
+                    UpstreamAdapterSelection::PendingAccount
+                ));
+                assert!(selected.unwrap().is_some());
+            } else {
+                assert_eq!(
+                    preselection.unwrap_err().kind(),
+                    ProviderErrorKind::Unavailable
+                );
+                assert_eq!(selected.unwrap_err().kind(), ProviderErrorKind::Unavailable);
+            }
+            assert_eq!(
+                context
+                    .upstream_adapter_for_account(
+                        &provider,
+                        &model,
+                        &ProviderAccountId::new("acct_native").unwrap()
+                    )
+                    .unwrap_err()
+                    .kind(),
+                ProviderErrorKind::Unavailable
+            );
+        }
+        drop(generation);
+        runtime.shutdown().await;
+        super::wait_until_empty(cache.path()).await;
+    }
+}
+
+#[tokio::test]
 async fn account_scoped_adapters_share_a_model_without_sharing_their_targets() {
     let first = MockServer::start().await;
     let second = MockServer::start().await;
@@ -284,12 +350,10 @@ async fn account_scoped_adapters_share_a_model_without_sharing_their_targets() {
     let model = UpstreamModelId::new("native-model").unwrap();
     {
         let context = context(&runtime, &generation, "key-one");
-        assert!(
-            context
-                .upstream_adapter(&provider, &model)
-                .unwrap()
-                .is_none()
-        );
+        assert!(matches!(
+            context.upstream_adapter(&provider, &model).unwrap(),
+            UpstreamAdapterSelection::PendingAccount
+        ));
         assert!(
             context
                 .upstream_adapter_for_account(
@@ -1473,15 +1537,15 @@ async fn verify_adapter_reconfiguration(version: u32) {
     let disabled = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(3).unwrap())
         .await
         .unwrap();
-    assert!(
+    assert!(matches!(
         context(&runtime, &disabled, "key-one")
             .upstream_adapter(
                 &ProviderKind::new("openai").unwrap(),
                 &UpstreamModelId::new("native-model").unwrap()
             )
-            .unwrap()
-            .is_none()
-    );
+            .unwrap(),
+        UpstreamAdapterSelection::Native
+    ));
     drop(new);
     assert!(
         new_stream
@@ -1701,7 +1765,7 @@ async fn large_adapter_requests_use_the_frozen_budget_for_both_http_capabilities
                 let provider = ProviderKind::new("openai").unwrap();
                 let model = UpstreamModelId::new("native-model").unwrap();
                 let adapter = context
-                    .upstream_adapter(&provider, &model)
+                    .upstream_adapter_for_account(&provider, &model, &account.id)
                     .unwrap()
                     .unwrap();
                 let metadata = ProviderCallMetadata::new(

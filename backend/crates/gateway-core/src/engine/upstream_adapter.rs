@@ -31,18 +31,16 @@ pub trait UpstreamAdapterPlan: fmt::Debug + Send + Sync {
         context: &AttemptContext,
         provider: &ProviderKind,
         model: &UpstreamModelId,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError>;
+        account: Option<&ProviderAccountId>,
+    ) -> Result<UpstreamAdapterSelection, ProviderError>;
+}
 
-    /// 按已知账号解析同一发布代次的执行端，默认沿用请求级选择
-    fn select_for_account(
-        &self,
-        context: &AttemptContext,
-        provider: &ProviderKind,
-        model: &UpstreamModelId,
-        _account: &ProviderAccountId,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
-        self.select(context, provider, model)
-    }
+/// 未确定账号时不能把账号范围声明视为原生执行或继续命中后置兜底
+#[derive(Debug)]
+pub enum UpstreamAdapterSelection {
+    Native,
+    Adapter(Arc<dyn UpstreamAdapter>),
+    PendingAccount,
 }
 
 /// 请求同时持有计划及发布集合，防止旧集合先排空进程而中断在途调用
@@ -69,19 +67,9 @@ impl FrozenUpstreamAdapterPlan {
         context: &AttemptContext,
         provider: &ProviderKind,
         model: &UpstreamModelId,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
-        self.plan.select(context, provider, model)
-    }
-
-    pub(super) fn select_for_account(
-        &self,
-        context: &AttemptContext,
-        provider: &ProviderKind,
-        model: &UpstreamModelId,
-        account: &ProviderAccountId,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
-        self.plan
-            .select_for_account(context, provider, model, account)
+        account: Option<&ProviderAccountId>,
+    ) -> Result<UpstreamAdapterSelection, ProviderError> {
+        self.plan.select(context, provider, model, account)
     }
 }
 

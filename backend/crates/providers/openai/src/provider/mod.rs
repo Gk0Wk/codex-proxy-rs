@@ -16,6 +16,7 @@ use gateway_core::engine::provider::{
     ContinuationRequestObservation, EventStream, Provider, ProviderCallMetadata, ProviderRequest,
     ProviderRequestObservation, ProviderSelectionObservation, ProviderStream,
 };
+use gateway_core::engine::upstream_adapter::UpstreamAdapterSelection;
 use gateway_core::engine::{AttemptContext, AttemptTransport, ContinuationAttempt};
 use gateway_core::error::{
     ClientVisibleUpstreamError, ClientVisibleUpstreamResponse, ContinuationFailure,
@@ -608,7 +609,8 @@ impl Provider for CodexProvider {
             unreachable!("generate settings keep the operation kind")
         };
         let adapter = context.upstream_adapter(candidate.provider(), upstream_model)?;
-        if adapter.is_none()
+        let adapted = matches!(adapter, UpstreamAdapterSelection::Adapter(_));
+        if !adapted
             && generate
                 .provider_session_state(PROVIDER_NAME)
                 .is_some_and(|state| state.extension_owner().is_some())
@@ -627,7 +629,7 @@ impl Provider for CodexProvider {
             .as_ref()
             .is_some_and(CodexResponsesRequest::is_guardian);
         let preselection = upstream
-            .filter(|_| adapter.is_none())
+            .filter(|_| !adapted)
             .map(|upstream| self.prepare_generate_request(generate, upstream, &context));
         if let Some(prepared) = preselection.as_ref() {
             prepared.checked_native_continuation_scope(&context)?;

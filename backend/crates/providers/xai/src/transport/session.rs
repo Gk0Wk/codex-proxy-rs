@@ -248,6 +248,7 @@ impl fmt::Debug for SelectedGrokSession {
 #[derive(Debug, Clone)]
 pub struct GrokSessionSelection {
     pub(crate) upstream_context: Option<gateway_core::engine::AttemptContext>,
+    pub(crate) adapter_required: bool,
     pub(crate) lease_metadata: Option<Arc<gateway_core::provider_ports::ProviderLeaseMetadata>>,
     upstream_model: UpstreamModelId,
     excluded_accounts: BTreeSet<ProviderAccountId>,
@@ -299,6 +300,7 @@ impl GrokSessionSelection {
         Self {
             lease_metadata: None,
             upstream_context: None,
+            adapter_required: false,
             upstream_model,
             excluded_accounts,
             required_account,

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use gateway_core::engine::extensions::{ExecutionExtensionIndex, ExecutionExtensionPlans};
-use gateway_core::engine::upstream_adapter::{UpstreamAdapter, UpstreamAdapterPlan};
+use gateway_core::engine::upstream_adapter::{UpstreamAdapterPlan, UpstreamAdapterSelection};
 use gateway_core::routing::extensions::{ExtensionSetId, ExtensionSetLease, ExtensionSetReference};
 use gateway_core::{
     engine::AttemptContext, error::ProviderError, identity::ProviderKind, routing::UpstreamModelId,
@@ -31,8 +31,9 @@ impl UpstreamAdapterPlan for EmptyAdapterPlan {
         _: &AttemptContext,
         _: &ProviderKind,
         _: &UpstreamModelId,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
-        Ok(None)
+        _: Option<&gateway_core::account::ProviderAccountId>,
+    ) -> Result<UpstreamAdapterSelection, ProviderError> {
+        Ok(UpstreamAdapterSelection::Native)
     }
 }
 
@@ -99,20 +100,13 @@ impl UpstreamAdapterPlan for AccountSelectionProbe {
         _: &AttemptContext,
         _: &ProviderKind,
         _: &UpstreamModelId,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
-        self.0.lock().unwrap().push(None);
-        Ok(None)
-    }
-
-    fn select_for_account(
-        &self,
-        _: &AttemptContext,
-        _: &ProviderKind,
-        _: &UpstreamModelId,
-        account: &gateway_core::account::ProviderAccountId,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, ProviderError> {
-        self.0.lock().unwrap().push(Some(account.as_str().into()));
-        Ok(None)
+        account: Option<&gateway_core::account::ProviderAccountId>,
+    ) -> Result<UpstreamAdapterSelection, ProviderError> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(account.map(|account| account.as_str().into()));
+        Ok(UpstreamAdapterSelection::Native)
     }
 }
 
@@ -175,12 +169,10 @@ fn adapter_preselection_follows_only_the_current_attempt_account_owner() {
             CancellationToken::new(),
         )
         .with_continuation_attempt(attempt);
-        assert!(
-            context
-                .upstream_adapter(&provider, &model)
-                .unwrap()
-                .is_none()
-        );
+        assert!(matches!(
+            context.upstream_adapter(&provider, &model).unwrap(),
+            UpstreamAdapterSelection::Native
+        ));
         assert_eq!(*probe.0.lock().unwrap(), vec![expected.map(str::to_owned)]);
     }
 }

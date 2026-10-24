@@ -5,6 +5,7 @@ use gateway_core::account::AccountRuntimeSignals;
 use gateway_core::account::FastMode;
 use gateway_core::engine::upstream_adapter::{
     UpstreamAccountConnection, UpstreamAdapter, UpstreamAdapterInvocation, UpstreamAdapterPlan,
+    UpstreamAdapterSelection,
 };
 
 #[derive(Debug)]
@@ -12,18 +13,16 @@ struct AdapterProbe {
     polls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl gateway_core::engine::upstream_adapter::UpstreamAdapterPlan for AdapterProbe {
+impl UpstreamAdapterPlan for AdapterProbe {
     fn select(
         &self,
         _: &AttemptContext,
         provider: &ProviderKind,
         _: &UpstreamModelId,
-    ) -> Result<
-        Option<Arc<dyn gateway_core::engine::upstream_adapter::UpstreamAdapter>>,
-        gateway_core::error::ProviderError,
-    > {
+        _: Option<&ProviderAccountId>,
+    ) -> Result<UpstreamAdapterSelection, gateway_core::error::ProviderError> {
         assert_eq!(provider.as_str(), "openai");
-        Ok(Some(Arc::new(Self {
+        Ok(UpstreamAdapterSelection::Adapter(Arc::new(Self {
             polls: self.polls.clone(),
         })))
     }
@@ -182,19 +181,13 @@ impl UpstreamAdapterPlan for AccountScopedProbe {
         _: &AttemptContext,
         _: &ProviderKind,
         _: &UpstreamModelId,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, gateway_core::error::ProviderError> {
-        Ok(None)
-    }
-
-    fn select_for_account(
-        &self,
-        _: &AttemptContext,
-        _: &ProviderKind,
-        _: &UpstreamModelId,
-        account: &ProviderAccountId,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, gateway_core::error::ProviderError> {
+        account: Option<&ProviderAccountId>,
+    ) -> Result<UpstreamAdapterSelection, gateway_core::error::ProviderError> {
+        let Some(account) = account else {
+            return Ok(UpstreamAdapterSelection::PendingAccount);
+        };
         if account.as_str() != "acct_subagent_a" {
-            return Ok(None);
+            return Ok(UpstreamAdapterSelection::Native);
         }
         if !self.available {
             return Err(gateway_core::error::ProviderError::new(
@@ -202,7 +195,7 @@ impl UpstreamAdapterPlan for AccountScopedProbe {
                 UpstreamSendState::NotSent,
             ));
         }
-        Ok(Some(Arc::new(self.clone())))
+        Ok(UpstreamAdapterSelection::Adapter(Arc::new(self.clone())))
     }
 }
 
@@ -426,8 +419,9 @@ impl UpstreamAdapterPlan for ConnectionProbe {
         _: &AttemptContext,
         _: &ProviderKind,
         _: &UpstreamModelId,
-    ) -> Result<Option<Arc<dyn UpstreamAdapter>>, gateway_core::error::ProviderError> {
-        Ok(Some(Arc::new(Self {
+        _: Option<&ProviderAccountId>,
+    ) -> Result<UpstreamAdapterSelection, gateway_core::error::ProviderError> {
+        Ok(UpstreamAdapterSelection::Adapter(Arc::new(Self {
             selected: Arc::clone(&self.selected),
         })))
     }

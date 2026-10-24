@@ -152,7 +152,7 @@ impl GrokAccountSessionSelector {
                                 account.id(),
                             )
                             .is_ok_and(|adapter| {
-                                adapter.is_none_or(|adapter| {
+                                adapter.map_or(!request.adapter_required, |adapter| {
                                     adapter.supports_authentication(account.authentication_kind())
                                 })
                             })

@@ -575,7 +575,7 @@ impl AttemptContext {
         &self,
         provider: &ProviderKind,
         model: &UpstreamModelId,
-    ) -> Result<Option<Arc<dyn upstream_adapter::UpstreamAdapter>>, ProviderError> {
+    ) -> Result<upstream_adapter::UpstreamAdapterSelection, ProviderError> {
         let account = self
             .required_account()
             .or_else(|| match self.continuation_attempt() {
@@ -589,13 +589,10 @@ impl AttemptContext {
                     .map(|owner| owner.account()),
                 ContinuationAttempt::None | ContinuationAttempt::ReplayAny => None,
             });
-        if let Some(account) = account {
-            return self.upstream_adapter_for_account(provider, model, account);
-        }
-        self.request
-            .upstream_adapters
-            .as_ref()
-            .map_or(Ok(None), |plan| plan.select(self, provider, model))
+        self.request.upstream_adapters.as_ref().map_or(
+            Ok(upstream_adapter::UpstreamAdapterSelection::Native),
+            |plan| plan.select(self, provider, model, account),
+        )
     }
 
     /// 账号候选资格检查和最终执行解析使用同一冻结计划，不调用插件进程
@@ -609,7 +606,16 @@ impl AttemptContext {
             .upstream_adapters
             .as_ref()
             .map_or(Ok(None), |plan| {
-                plan.select_for_account(self, provider, model, account)
+                match plan.select(self, provider, model, Some(account))? {
+                    upstream_adapter::UpstreamAdapterSelection::Native => Ok(None),
+                    upstream_adapter::UpstreamAdapterSelection::Adapter(adapter) => {
+                        Ok(Some(adapter))
+                    }
+                    // 已知账号的解析必须给出最终执行端，不能绕过资格检查进入原生路径
+                    upstream_adapter::UpstreamAdapterSelection::PendingAccount => Err(
+                        ProviderError::new(ProviderErrorKind::Protocol, UpstreamSendState::NotSent),
+                    ),
+                }
             })
     }
 
