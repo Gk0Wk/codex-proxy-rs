@@ -157,6 +157,7 @@ export interface Account {
   }
   weight: number
   modelAccess: AccountModelAccess
+  modelMappings: Record<string, string>
   accessTokenExpiresAt: string | null
   accessTokenExpiresAtDisplay: string | null
   refreshTokenExpiresAt: string | null
@@ -425,6 +426,7 @@ interface AccountUpdateParam {
   concurrencyLimit: number | null
   weight: number
   modelAccess?: AccountModelAccess
+  modelMappings?: Record<string, string>
   groupIds: string[]
 }
 
@@ -436,6 +438,7 @@ interface AccountBatchUpdateParam {
   concurrencyLimit?: number | null
   weight?: number
   modelAccess?: AccountModelAccess
+  modelMappings?: Record<string, string>
   groupIds?: string[]
 }
 
@@ -450,6 +453,7 @@ export interface AccountImportSettings {
   concurrencyLimit: number | null
   weight: number
   modelAccess?: AccountModelAccess
+  modelMappings?: Record<string, string>
   groupIds: string[]
 }
 

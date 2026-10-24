@@ -26,6 +26,8 @@ pub struct ContributedModelAlias {
 pub struct ProviderModelDescriptor {
     pub model: UpstreamModelId,
     pub content: ProviderModelContent,
+    /// 实际发现该条目的账号；显式账号映射只能引用同一账号的完整对象
+    pub source_accounts: BTreeSet<ProviderAccountId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

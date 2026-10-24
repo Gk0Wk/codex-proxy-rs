@@ -726,6 +726,7 @@ fn selector_does_not_retry_invalid_credential_data() {
         account,
         credential: PlaintextCredential::new(serde_json::Map::new()),
         model_access: None,
+        model_mappings: Default::default(),
     }))
     .expect("persist invalid provider data");
     let leases = Arc::new(TestLeaseCoordinator::default());

@@ -673,6 +673,14 @@ OpenAI Provider 在选号时排除 Grok 模型的 ChatGPT OAuth 账号，API Key
 按映射后的上游模型筛选账号；重试和 fallback 使用同一冻结政策。上游目录和凭据不承载或改写该政策。
 客户端目录的政策过滤判断范围内整个候选池，原生模型对象仍由 Provider 独占解释
 
+`account::AccountModelMappings` 单独存入 `model_mappings_json`，只保存 canonical 到账号 wire 的精确单跳映射，默认空对象表示沿用原行为。
+插件/全局映射先解析 canonical，账号映射不改变这一优先级；Provider 仍是最终 wire 模型的执行 owner。路由候选冻结每个可服务账号的 wire，
+同一 Provider 中不同 wire 的账号仍共享一个候选池，不拆散 Smart、亲和、租约或换号路径。每账号模型政策按解析后的 wire 判断；
+选中账号后的 wire 同时进入编码、Provider metadata、插件 attempt 上下文、Core 响应校验和实际发送模型计价
+
+模型目录只在真实 wire 来源账号和完整对象存在时，把显式映射键反向投影为 canonical；不得跨账号借用同名模型能力，也不得把未发现 wire
+升级为虚构目录条目。非空映射第一版只允许 OpenAI API Key Responses 兼容账号，OAuth 和其他 Provider 保持恒等并在管理写入边界拒绝非空配置
+
 账号编辑在一个事务中更新调度事实，批量更新只应用显式提供的字段。导入与首次 OAuth 可携带统一账号设置，由 Admin 传递给 Store，
 与凭据在同一事务中提交；Provider 仍独占凭据解析。未附带设置的导入、重新授权和后台刷新保留已有分组、
 权重、并发与模型政策。模型政策变更推进配置 revision，不推进 credential revision。管理端导入和账号编辑共用设置表单，凭据输入独立于设置

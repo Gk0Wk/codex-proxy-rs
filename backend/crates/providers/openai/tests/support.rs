@@ -134,6 +134,7 @@ impl MemoryAccountStore {
             account,
             credential,
             model_access: None,
+            model_mappings: None,
         })
         .await
         .expect("seed API account");
@@ -161,6 +162,17 @@ impl MemoryAccountStore {
             .account
             .clone()
             .with_scheduling(concurrency_limit, weight);
+    }
+
+    pub(crate) fn set_model_mappings(
+        &self,
+        id: &str,
+        model_mappings: gateway_core::account::AccountModelMappings,
+    ) {
+        let id = ProviderAccountId::new(id).expect("valid account ID");
+        let mut accounts = self.accounts.lock().expect("account store lock");
+        let stored = accounts.get_mut(&id).expect("seeded account");
+        stored.account = stored.account.clone().with_model_mappings(model_mappings);
     }
 
     pub(crate) fn set_egress(

@@ -1178,6 +1178,7 @@ async fn terminal_admin_mutations_keep_revision_account_and_audit_atomic() {
             UpdateAccount {
                 notes: None,
                 model_access: Default::default(),
+                model_mappings: Default::default(),
                 outbound_proxy: None,
                 account_id: "acct_terminal_mutation".to_owned(),
                 enabled: false,
@@ -1259,6 +1260,7 @@ async fn account_proxy_edits_preserve_credentials_and_clear_egress_without_audit
     let command = UpdateAccount {
         notes: None,
         model_access: Default::default(),
+        model_mappings: Default::default(),
         account_id: "acct_proxy".to_owned(),
         enabled: true,
         concurrency_limit: None,
@@ -1337,6 +1339,7 @@ async fn account_notes_round_trip_and_survive_import_and_scheduling_updates() {
         group_ids: vec![],
         outbound_proxy: None,
         model_access: None,
+        model_mappings: Default::default(),
     };
     store
         .update_account(command.clone(), &context)
@@ -1376,6 +1379,7 @@ async fn account_notes_round_trip_and_survive_import_and_scheduling_updates() {
                 weight: Some(gateway_core::account::AccountWeight::DEFAULT),
                 group_ids: Some(vec![]),
                 model_access: None,
+                model_mappings: Default::default(),
                 outbound_proxy: None,
             },
             &context,
@@ -1414,6 +1418,7 @@ async fn account_notes_round_trip_and_survive_import_and_scheduling_updates() {
                 weight: gateway_core::account::AccountWeight::DEFAULT,
                 group_ids: vec![],
                 model_access: None,
+                model_mappings: Default::default(),
             }),
             outbound_proxy: None,
             audit: audit("audit_notes_reimport", "import", "acct_notes"),
@@ -1486,6 +1491,7 @@ async fn invalid_account_notes_roll_back_scheduling_revision_and_audit() {
                 group_ids: vec![],
                 outbound_proxy: None,
                 model_access: None,
+                model_mappings: Default::default(),
             },
             &MutationContext {
                 actor: MutationActor::System,
@@ -1610,6 +1616,7 @@ async fn account_enable_preserves_facts_and_explicit_recovery_clears_them() {
                 concurrency_limit: None,
                 weight: None,
                 model_access: None,
+                model_mappings: Default::default(),
                 group_ids: None,
                 outbound_proxy: None,
             },
@@ -1730,6 +1737,7 @@ async fn terminal_batch_update_replaces_state_and_groups_once_or_rolls_back_ever
         .batch_update_accounts(
             BatchUpdateAccounts {
                 model_access: Default::default(),
+                model_mappings: Default::default(),
                 outbound_proxy: None,
                 account_ids: account_ids.clone(),
                 enabled: Some(false),
@@ -1767,6 +1775,7 @@ async fn terminal_batch_update_replaces_state_and_groups_once_or_rolls_back_ever
         .batch_update_accounts(
             BatchUpdateAccounts {
                 model_access: Default::default(),
+                model_mappings: Default::default(),
                 outbound_proxy: None,
                 account_ids: account_ids.clone(),
                 enabled: Some(true),
@@ -1970,6 +1979,7 @@ async fn authorization_create_returns_existing_account_id_when_identity_is_upser
                 settings: Some(gateway_admin::model::accounts::AccountImportSettings {
                     notes: Some("  OAuth 新建备注  ".to_owned()),
                     model_access: Default::default(),
+                    model_mappings: Default::default(),
                     enabled: false,
                     concurrency_limit: None,
                     weight: gateway_core::account::AccountWeight::new(9).expect("weight"),
@@ -1985,6 +1995,7 @@ async fn authorization_create_returns_existing_account_id_when_identity_is_upser
                 credential: AuthorizationCredentialCommit::Create(Box::new(
                     PreparedCredentialCreate {
                         model_access: Default::default(),
+                        model_mappings: Default::default(),
                         outbound_proxy: None,
                         account_id: ProviderAccountId::new("acct_authorization_candidate")
                             .expect("candidate account ID"),
@@ -2162,6 +2173,7 @@ async fn core_refresh_cas_updates_profile_and_credential_under_one_revision() {
     repository
         .insert_provider_account(NewProviderAccount {
             model_access: Default::default(),
+            model_mappings: Default::default(),
             outbound_proxy: None,
             id: "acct_core_refresh".to_owned(),
             provider_kind: "xai".to_owned(),
@@ -2505,6 +2517,7 @@ async fn provider_account_admin_mutations_are_scoped_audited_and_atomic() {
         .batch_update_provider_accounts_admin(BatchUpdateProviderAccountsAdmin {
             notes: None,
             model_access: Default::default(),
+            model_mappings: Default::default(),
             outbound_proxy: None,
             account_ids: vec!["acct_admin_a".to_owned()],
             enabled: Some(false),
@@ -2578,6 +2591,7 @@ async fn credential_rotation_and_settings_share_one_transaction() {
         weight: AccountWeight::new(7).unwrap(),
         group_ids: vec![AccountGroupId::new(GROUP_ID).unwrap()],
         model_access: None,
+        model_mappings: Default::default(),
         outbound_proxy: Some(AccountProxySelection::Direct),
     };
     let scope = ProviderAccountAdminScope {
@@ -3097,6 +3111,7 @@ async fn disabled_account_updates_credentials_without_enabling_scheduling() {
 pub(super) fn account(id: &str, upstream_user_id: &str) -> NewProviderAccount {
     NewProviderAccount {
         model_access: Default::default(),
+        model_mappings: Default::default(),
         outbound_proxy: None,
         id: id.to_owned(),
         provider_kind: "openai".to_owned(),
@@ -3296,6 +3311,7 @@ async fn proxy_edit_preserves_an_inflight_token_refresh() {
             UpdateAccount {
                 notes: None,
                 model_access: Default::default(),
+                model_mappings: Default::default(),
                 account_id: id.as_str().to_owned(),
                 enabled: true,
                 concurrency_limit: None,
@@ -3354,6 +3370,7 @@ async fn account_import_settings_apply_atomically_to_new_and_existing_identities
     let settings = AccountImportSettings {
         notes: Some("  批量新建\n团队备用  ".to_owned()),
         model_access: Default::default(),
+        model_mappings: Default::default(),
         enabled: false,
         concurrency_limit: Some(AccountConcurrencyLimit::new(3).expect("concurrency")),
         weight: AccountWeight::new(7).expect("weight"),
@@ -3490,6 +3507,7 @@ async fn model_access_only_batch_update_preserves_other_settings_and_survives_re
         group_ids: None,
         outbound_proxy: None,
         model_access: Some(policy.clone()),
+        model_mappings: Default::default(),
     };
     let context = MutationContext {
         actor: MutationActor::System,
@@ -3532,6 +3550,7 @@ async fn model_access_only_batch_update_preserves_other_settings_and_survives_re
         .batch_update_accounts(
             BatchUpdateAccounts {
                 model_access: Some(AccountModelAccess::all()),
+                model_mappings: Default::default(),
                 ..command
             },
             &context,
@@ -3544,6 +3563,102 @@ async fn model_access_only_batch_update_preserves_other_settings_and_survives_re
         .expect("load")
         .expect("account");
     assert_eq!(loaded.summary.model_access, AccountModelAccess::all());
+    database.close().await;
+}
+
+#[tokio::test]
+async fn account_model_mappings_round_trip_preserve_on_none_and_clear_on_empty() {
+    use gateway_core::account::{AccountModelMappings, AccountWeight};
+
+    let Some(database) = TestDatabase::create("account_model_mappings").await else {
+        return;
+    };
+    let repository = PgProviderAccountRepository::new(database.pool.clone());
+    let mappings = AccountModelMappings::new(BTreeMap::from([(
+        "canonical-model".to_owned(),
+        "wire-model".to_owned(),
+    )]))
+    .expect("mappings");
+    let mut input = account("acct_model_mappings", "user-model-mappings");
+    input.model_mappings = Some(mappings.clone());
+    input.weight = AccountWeight::new(31).expect("weight");
+    repository
+        .insert_provider_account(input.clone())
+        .await
+        .expect("insert mapped account");
+
+    let loaded = repository
+        .load_provider_account(&input.id)
+        .await
+        .expect("load inserted account")
+        .expect("account");
+    assert_eq!(loaded.summary.model_mappings, mappings);
+
+    let store = admin_account_store(&database.pool);
+    let context = MutationContext {
+        actor: MutationActor::System,
+        request_id: "request_model_mappings".to_owned(),
+    };
+    let command = BatchUpdateAccounts {
+        account_ids: vec![input.id.clone()],
+        enabled: None,
+        concurrency_limit: None,
+        weight: Some(AccountWeight::new(32).expect("weight")),
+        model_access: None,
+        model_mappings: None,
+        group_ids: None,
+        outbound_proxy: None,
+    };
+    store
+        .batch_update_accounts(command.clone(), &context)
+        .await
+        .expect("preserve omitted mappings");
+    let loaded = repository
+        .load_provider_account(&input.id)
+        .await
+        .expect("load preserved account")
+        .expect("account");
+    assert_eq!(loaded.summary.model_mappings, mappings);
+    assert_eq!(loaded.summary.weight.get(), 32);
+
+    input.name = "reimported-model-mappings".to_owned();
+    input.model_mappings = None;
+    repository
+        .import_provider_accounts(ImportProviderAccounts {
+            settings: None,
+            outbound_proxy: None,
+            scope: ProviderAccountAdminScope {
+                provider_kind: "openai".to_owned(),
+            },
+            accounts: vec![input.clone()],
+            audit: audit("audit_model_mappings", "import", &input.id),
+        })
+        .await
+        .expect("reimport without mappings");
+    let loaded = repository
+        .load_provider_account(&input.id)
+        .await
+        .expect("load reimported account")
+        .expect("account");
+    assert_eq!(loaded.summary.model_mappings, mappings);
+
+    store
+        .batch_update_accounts(
+            BatchUpdateAccounts {
+                model_mappings: Some(AccountModelMappings::default()),
+                ..command
+            },
+            &context,
+        )
+        .await
+        .expect("clear mappings");
+    let loaded = repository
+        .load_provider_account(&input.id)
+        .await
+        .expect("load cleared account")
+        .expect("account");
+    assert!(loaded.summary.model_mappings.is_empty());
+    assert_eq!(loaded.summary.weight.get(), 32);
     database.close().await;
 }
 

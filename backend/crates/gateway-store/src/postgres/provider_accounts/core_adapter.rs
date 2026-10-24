@@ -49,6 +49,11 @@ impl ProviderAccountStore for PgProviderAccountRepository {
                     .model_access
                     .unwrap_or_else(|| account.account.model_access().clone()),
             ),
+            model_mappings: Some(
+                account
+                    .model_mappings
+                    .unwrap_or_else(|| account.account.model_mappings().clone()),
+            ),
             credential_state: account.account.credential_state(),
             credential_observed_at: Utc::now(),
         })

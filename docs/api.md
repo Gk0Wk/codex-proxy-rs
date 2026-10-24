@@ -845,6 +845,33 @@ Search 的选号限制不约束插件在选号后主动改写正文。
 普通 `/v1/models` 和单模型查询将已发现的 OpenAI 模型关联到来源账号，至少一个来源账号在当前 Key 范围内且政策允许时才展示；
 同 Provider 中未发现该模型的 `all` 账号不会使它进入列表。原生目录保留已有来源选择和完整模型对象
 
+### 账号模型映射
+
+账号列表、详情、创建/导入设置以及更新接口可返回或提交 `modelMappings`。该字段是 canonical 模型到上游 wire 模型的精确单跳映射，
+默认值为空对象 `{}`：
+
+```json
+{
+  "modelMappings": {
+    "canonical-model": "account-wire-model"
+  }
+}
+```
+
+解析顺序保持现有契约：插件模型别名或全局 `modelMappings` 先得到 canonical，再由当前账号做一次精确替换；未命中原样保留 canonical。
+账号映射不递归解析目标。空映射、OAuth 账号和其他 Provider 的行为不变；非空映射当前只接受 OpenAI API Key 账号，
+其他账号在保存、导入、授权完成或凭据轮换时返回输入错误。
+
+省略字段保留原映射，提交 `{}` 清空。最多 512 项；模型 ID 必须为 1–256 UTF-8 字节、无首尾空白、控制字符或保留的 `__` 前缀，
+整个对象按 PostgreSQL JSONB 文本格式不得超过 256 KiB。无效输入在进入持久化之前拒绝
+
+每个账号按自己的 wire 模型执行现有模型政策、能力与调度资格检查。同一 Provider 的账号仍进入同一个候选池，Smart 调度、会话亲和、
+并发租约、排队、重试和换号语义不变；选中账号后才用其 wire 模型编码 Responses 正文、Provider metadata、插件 attempt 上下文和本地费用。
+Core 按选中账号校验冻结映射，不接受 Provider 返回与计划不一致的 wire 模型。映射不进入凭据，也不改变客户端响应正文、compact 私有状态或历史请求。
+
+映射 canonical 只有在该账号的真实 wire 模型目录可确认时才反向投影到普通和 Codex 原生模型目录，并复用同一账号返回的完整对象和能力，
+不跨账号借用同名模型对象，也不为未发现 wire 创建虚构目录条目。无目录时仍沿用现有未知模型请求行为。Images 与 standalone Search 不参与文本模型映射
+
 ### 独立代理管理 / Managed Proxies
 
 所有端点要求管理员身份。所有响应只返回去掉认证信息的 `endpoint`，不会返回完整 URL

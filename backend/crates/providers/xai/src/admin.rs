@@ -601,6 +601,7 @@ impl ProviderAdmin for XaiAdminProvider {
             };
             let prepared = NewProviderAccount {
                 model_access,
+                model_mappings: None,
                 account: prepared.account.with_outbound_proxy(outbound_proxy),
                 credential: prepared.credential,
             };
@@ -939,6 +940,7 @@ impl XaiAdminProvider {
                     .map_err(map_repository_error)?;
                 let prepared = NewProviderAccount {
                     model_access: Default::default(),
+                    model_mappings: Default::default(),
                     account: prepared
                         .account
                         .with_outbound_proxy(stored.mutation.outbound_proxy().cloned()),
@@ -1026,10 +1028,12 @@ fn prepared_create(
     let NewProviderAccount {
         account,
         model_access,
+        model_mappings,
         credential,
     } = prepared;
     Ok(PreparedCredentialCreate {
         model_access,
+        model_mappings,
         account_id: account.id().clone(),
         provider_kind: account.provider().clone(),
         name: account.name().to_owned(),

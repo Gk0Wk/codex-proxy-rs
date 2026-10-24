@@ -668,6 +668,7 @@ impl Environment {
                     json!({"key":"test-only"}).as_object().unwrap().clone(),
                 ),
                 model_access: None,
+                model_mappings: Default::default(),
             })
             .await
             .unwrap();

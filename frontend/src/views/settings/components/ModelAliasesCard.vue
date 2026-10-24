@@ -8,8 +8,13 @@ import { useI18n } from 'vue-i18n'
 withDefaults(defineProps<{
   mappings: Array<{ requestedModel: string, upstreamModel: string }>
   loading?: boolean
+  title?: string
+  description?: string
+  addLabel?: string
+  disabled?: boolean
 }>(), {
   loading: false,
+  disabled: false,
 })
 
 const emit = defineEmits<{
@@ -23,16 +28,16 @@ const { t } = useI18n({ useScope: 'global' })
 
 <template>
   <ZCard
-    :title="t('settings.modelMapping')"
-    :description="t('settings.routing.modelMapHelp')"
+    :title="title ?? t('settings.modelMapping')"
+    :description="description ?? t('settings.routing.modelMapHelp')"
   >
     <div class="grid gap-4">
       <div class="flex flex-wrap items-center gap-3">
-        <ZButton :disabled="loading" @click="emit('addMapping')">
+        <ZButton :disabled="loading || disabled" @click="emit('addMapping')">
           <template #icon>
             <Plus class="size-4" />
           </template>
-          {{ t('settings.addMapping') }}
+          {{ addLabel ?? t('settings.addMapping') }}
         </ZButton>
       </div>
 
@@ -52,6 +57,7 @@ const { t } = useI18n({ useScope: 'global' })
             :model-value="row.requestedModel"
             :placeholder="t('settings.requestModel')"
             :aria-label="t('settings.requestModel')"
+            :disabled="disabled"
             @update:model-value="emit('updateMapping', index, 'requestedModel', $event)"
           />
           <span class="hidden text-cp-text-quaternary sm:block" aria-hidden="true">→</span>
@@ -60,11 +66,13 @@ const { t } = useI18n({ useScope: 'global' })
             :model-value="row.upstreamModel"
             :placeholder="t('settings.upstreamModel')"
             :aria-label="t('settings.upstreamModelName')"
+            :disabled="disabled"
             @update:model-value="emit('updateMapping', index, 'upstreamModel', $event)"
           />
           <ZIconButton
             class="col-start-2 row-span-2 row-start-1 sm:col-start-auto sm:row-span-1 sm:row-start-auto"
             :aria-label="t('settings.deleteMapping')"
+            :disabled="disabled"
             @click="emit('removeMapping', index)"
           >
             <Trash2 class="size-4 text-cp-error" />

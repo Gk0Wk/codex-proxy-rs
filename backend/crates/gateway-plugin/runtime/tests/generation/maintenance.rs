@@ -87,6 +87,7 @@ async fn import_account(
                     ),
                 ),
                 model_access: None,
+                model_mappings: Default::default(),
                 outbound_proxy: None,
                 has_refresh_token: false,
                 access_token_expires_at: None,

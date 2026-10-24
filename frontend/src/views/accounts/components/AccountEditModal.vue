@@ -13,7 +13,7 @@ import AccountApiKeyFields from './AccountApiKeyFields.vue'
 import AccountIdentityCell from './AccountIdentityCell.vue'
 import AccountSettingsFields from './AccountSettingsFields.vue'
 
-defineProps<{
+const props = defineProps<{
   account: Account | null
   groups: AccountGroupRef[]
   groupsLoading: boolean
@@ -38,6 +38,7 @@ const notes = defineModel<string>('notes', { required: true })
 const enabled = defineModel<boolean>('enabled', { required: true })
 const concurrencyLimit = defineModel<string>('concurrencyLimit', { required: true })
 const modelAccess = defineModel<AccountModelAccess | undefined>('modelAccess', { required: true })
+const modelMappings = defineModel<Array<{ requestedModel: string, upstreamModel: string }>>('modelMappings', { required: true })
 const weight = defineModel<string>('weight', { required: true })
 const proxyMode = defineModel<string>('proxyMode', { required: true })
 const proxyId = defineModel<string>('proxyId', { required: true })
@@ -85,6 +86,7 @@ const selectedGroupIds = defineModel<string[]>('selectedGroupIds', { required: t
         v-model:concurrency-limit="concurrencyLimit"
         v-model:weight="weight"
         v-model:model-access="modelAccess"
+        v-model:model-mappings="modelMappings"
         v-model:selected-group-ids="selectedGroupIds"
         v-model:proxy-mode="proxyMode"
         v-model:proxy-id="proxyId"
@@ -92,6 +94,7 @@ const selectedGroupIds = defineModel<string[]>('selectedGroupIds', { required: t
         :groups-loading="groupsLoading"
         :disabled="saving"
         :show-scheduling="false"
+        :show-model-mappings="Boolean(props.account && isOpenAiApiKeyAccount(props.account))"
         :current-proxy-id="account.outboundProxyId"
         :endpoint="account.outboundProxyEndpoint"
         :account-id="account.id"

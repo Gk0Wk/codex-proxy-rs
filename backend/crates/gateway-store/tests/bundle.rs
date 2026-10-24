@@ -75,6 +75,7 @@ async fn inspection_bundle_does_not_migrate_and_rejects_business_writes() {
             json!({"key":"test-only"}).as_object().unwrap().clone(),
         ),
         model_access: None,
+        model_mappings: Default::default(),
     };
     writable
         .provider_ports()

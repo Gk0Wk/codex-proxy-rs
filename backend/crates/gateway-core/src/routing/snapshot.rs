@@ -112,6 +112,7 @@ pub struct SnapshotProviderAccountFacts {
     account_id: ProviderAccountId,
     provider_kind: String,
     model_access: crate::account::AccountModelAccess,
+    model_mappings: crate::account::AccountModelMappings,
 }
 
 impl SnapshotProviderAccountFacts {
@@ -121,6 +122,7 @@ impl SnapshotProviderAccountFacts {
             account_id,
             provider_kind: provider_kind.into(),
             model_access: crate::account::AccountModelAccess::all(),
+            model_mappings: crate::account::AccountModelMappings::default(),
         }
     }
 }
@@ -129,6 +131,15 @@ impl SnapshotProviderAccountFacts {
     #[must_use]
     pub fn with_model_access(mut self, model_access: crate::account::AccountModelAccess) -> Self {
         self.model_access = model_access;
+        self
+    }
+
+    #[must_use]
+    pub fn with_model_mappings(
+        mut self,
+        model_mappings: crate::account::AccountModelMappings,
+    ) -> Self {
+        self.model_mappings = model_mappings;
         self
     }
 }
@@ -477,7 +488,8 @@ async fn compile_runtime_snapshot(
             .insert(
                 account.account_id.clone(),
                 RuntimeAccount::new(provider_kind, BTreeSet::new())
-                    .with_model_access(account.model_access),
+                    .with_model_access(account.model_access)
+                    .with_model_mappings(account.model_mappings),
             )
             .is_some()
         {
@@ -503,7 +515,8 @@ async fn compile_runtime_snapshot(
             .get_mut(&account_id)
             .ok_or(RuntimeSnapshotCompileError::InvalidData)?;
         *account = RuntimeAccount::new(account.provider_kind().clone(), group_ids)
-            .with_model_access(account.model_access().clone());
+            .with_model_access(account.model_access().clone())
+            .with_model_mappings(account.model_mappings().clone());
     }
     let account_directory = Arc::new(RuntimeAccountDirectory::new(accounts));
 
@@ -838,6 +851,29 @@ impl RuntimeSnapshot {
                 .keys()
                 .filter_map(|model| PublicModelId::new(model.clone()).ok()),
         );
+        let provider_models = self.provider_models.get(provider);
+        let catalog_accounts = self.model_catalog_accounts.get(provider);
+        for (account_id, account) in self
+            .account_directory
+            .accounts()
+            .filter(|(_, account)| account.provider_kind() == provider)
+        {
+            for (canonical, wire) in account.model_mappings().iter() {
+                let Ok(wire_id) = UpstreamModelId::new(wire.to_owned()) else {
+                    continue;
+                };
+                if !provider_models.is_some_and(|models| models.contains_key(&wire_id))
+                    || !catalog_accounts
+                        .and_then(|models| models.get(wire))
+                        .is_some_and(|accounts| accounts.contains(account_id))
+                {
+                    continue;
+                }
+                if let Ok(public_model) = PublicModelId::new(canonical.to_owned()) {
+                    models.insert(public_model);
+                }
+            }
+        }
         models.extend(
             self.model_aliases()
                 .iter()
@@ -871,6 +907,34 @@ impl RuntimeSnapshot {
             };
             if let Ok(public_model) = PublicModelId::new(alias.clone()) {
                 profiles.insert(public_model, presentation.clone());
+            }
+        }
+        for (account_id, account) in self
+            .account_directory
+            .accounts()
+            .filter(|(_, account)| account.provider_kind() == provider)
+        {
+            for (canonical, wire) in account.model_mappings().iter() {
+                let Ok(wire_id) = UpstreamModelId::new(wire.to_owned()) else {
+                    continue;
+                };
+                if !self
+                    .model_catalog_accounts
+                    .get(provider)
+                    .and_then(|models| models.get(wire))
+                    .is_some_and(|accounts| accounts.contains(account_id))
+                {
+                    continue;
+                }
+                let Some(presentation) = presentations.get(&wire_id) else {
+                    continue;
+                };
+                let Ok(public_model) = PublicModelId::new(canonical.to_owned()) else {
+                    continue;
+                };
+                profiles
+                    .entry(public_model)
+                    .or_insert_with(|| presentation.clone());
             }
         }
         for alias in self
@@ -922,13 +986,55 @@ impl RuntimeSnapshot {
     ) -> Vec<super::PublicModelProfile> {
         let mut profiles = BTreeMap::new();
         for provider in scope.provider_kinds() {
-            for profile in self.public_model_profiles_for_provider(provider) {
-                if !self.catalog_model_allowed_for_scope(provider, profile.model(), scope) {
-                    continue;
-                }
+            for profile in self.public_model_profiles_for_provider_scope(provider, scope) {
                 profiles
                     .entry(profile.model().clone())
                     .or_insert_with(|| profile.presentation().clone());
+            }
+        }
+        profiles
+            .into_iter()
+            .map(|(model, presentation)| super::PublicModelProfile::new(model, presentation))
+            .collect()
+    }
+
+    pub(crate) fn public_model_profiles_for_provider_scope(
+        &self,
+        provider: &ProviderKind,
+        scope: &FrozenAccountScope,
+    ) -> Vec<super::PublicModelProfile> {
+        let Some(presentations) = self.provider_model_presentations.get(provider) else {
+            return Vec::new();
+        };
+        let mut profiles = BTreeMap::new();
+        for public_model in self.public_models_for_provider(provider) {
+            if !self.catalog_model_allowed_for_scope(provider, &public_model, scope) {
+                continue;
+            }
+            let canonical = self.mapped_model(public_model.as_str());
+            let presentation = scope
+                .directory()
+                .accounts()
+                .filter(|(_, account)| account.provider_kind() == provider)
+                .find_map(|(account_id, account)| {
+                    if !scope.allows_model(account_id, &canonical) {
+                        return None;
+                    }
+                    let wire = account.wire_model(&canonical);
+                    let wire_id = UpstreamModelId::new(wire.as_ref()).ok()?;
+                    let sources = self
+                        .model_catalog_accounts
+                        .get(provider)
+                        .and_then(|models| models.get(wire.as_ref()));
+                    if sources.is_some_and(|accounts| !accounts.contains(account_id))
+                        || (wire.as_ref() != canonical && sources.is_none())
+                    {
+                        return None;
+                    }
+                    presentations.get(&wire_id).cloned()
+                });
+            if let Some(presentation) = presentation {
+                profiles.insert(public_model, presentation);
             }
         }
         profiles
@@ -953,14 +1059,35 @@ impl RuntimeSnapshot {
         {
             return false;
         }
-        let Ok(upstream_model) =
-            UpstreamModelId::from_client_wire(self.mapped_model(public_model.as_str()))
-        else {
+        let canonical = self.mapped_model(public_model.as_str());
+        let provider_models = self.provider_models.get(provider);
+        let mut saw_provider_account = false;
+        for (_, account) in self
+            .account_directory
+            .accounts()
+            .filter(|(_, account)| account.provider_kind() == provider)
+        {
+            saw_provider_account = true;
+            let wire = account.wire_model(&canonical);
+            let Ok(wire) = UpstreamModelId::new(wire.as_ref()) else {
+                continue;
+            };
+            if provider_models.is_some_and(|models| models.contains_key(&wire)) {
+                return true;
+            }
+            if !self.exhaustive_provider_catalogs.contains(provider)
+                && !self.is_known_upstream_model(&wire)
+            {
+                return true;
+            }
+        }
+        if saw_provider_account {
+            return false;
+        }
+        let Ok(upstream_model) = UpstreamModelId::from_client_wire(canonical) else {
             return false;
         };
-        self.provider_models
-            .get(provider)
-            .is_some_and(|models| models.contains_key(&upstream_model))
+        provider_models.is_some_and(|models| models.contains_key(&upstream_model))
             || (!self.exhaustive_provider_catalogs.contains(provider)
                 && !self.is_known_upstream_model(&upstream_model))
     }
@@ -989,18 +1116,27 @@ impl RuntimeSnapshot {
         public_model: &PublicModelId,
         scope: &FrozenAccountScope,
     ) -> bool {
-        let upstream_model = self.mapped_model(public_model.as_str());
-        match self
-            .model_catalog_accounts
-            .get(provider)
-            .and_then(|models| models.get(&upstream_model))
+        let canonical = self.mapped_model(public_model.as_str());
+        for (account_id, account) in scope
+            .directory()
+            .accounts()
+            .filter(|(_, account)| account.provider_kind() == provider)
         {
-            Some(accounts) => accounts.iter().any(|account| {
-                scope.account_provider(account) == Some(provider)
-                    && scope.allows_model(account, &upstream_model)
-            }),
-            None => scope.allows_provider_model(provider, &upstream_model),
+            if !scope.allows_model(account_id, &canonical) {
+                continue;
+            }
+            let wire = account.wire_model(&canonical);
+            match self
+                .model_catalog_accounts
+                .get(provider)
+                .and_then(|models| models.get(wire.as_ref()))
+            {
+                Some(accounts) if accounts.contains(account_id) => return true,
+                Some(_) => {}
+                None => return true,
+            }
         }
+        false
     }
 
     #[must_use]
@@ -1100,6 +1236,11 @@ impl RuntimeSnapshot {
         enforce_account_model_policy: bool,
     ) -> Result<RoutingPlan, RoutingError> {
         let requirements = operation.capability_requirements();
+        let account_scope = if matches!(operation, Operation::Generate(_)) {
+            account_scope
+        } else {
+            Arc::new(account_scope.without_model_mappings())
+        };
         let mut candidates = Vec::new();
 
         if context.required_provider.is_none() && account_scope.provider_kinds().is_empty() {
@@ -1151,22 +1292,85 @@ impl RuntimeSnapshot {
             {
                 continue;
             }
-            let capabilities = self
-                .provider_models
-                .get(provider)
-                .and_then(|models| models.get(&upstream_model));
-            let emulated_features = match capabilities {
-                Some(capabilities) => {
-                    let Some(emulated) = capabilities.match_requirements(&requirements) else {
-                        continue;
-                    };
-                    emulated
-                }
-                None if known_model || self.exhaustive_provider_catalogs.contains(provider) => {
+            let provider_models = self.provider_models.get(provider);
+            // 已知 canonical 的 Provider 归属保持原规则，但不能在账号映射前用其能力丢弃目标 wire
+            if known_model
+                && provider_models.is_none_or(|models| !models.contains_key(&upstream_model))
+            {
+                continue;
+            }
+            let mut account_upstream_models = BTreeMap::new();
+            // 候选池汇总所有合规账号可能需要模拟的功能；实际资格已逐账号匹配
+            let mut candidate_emulated_features = BTreeSet::new();
+            let mut saw_provider_account = false;
+            for (account_id, _) in account_scope
+                .directory()
+                .accounts()
+                .filter(|(_, account)| account.provider_kind() == provider)
+            {
+                saw_provider_account = true;
+                if !account_scope.allows(account_id)
+                    || (enforce_account_model_policy
+                        && !account_scope.allows_model(account_id, upstream_model.as_str()))
+                {
                     continue;
                 }
-                None => BTreeSet::new(),
+                let wire = account_scope
+                    .wire_model(account_id, upstream_model.as_str())
+                    .expect("candidate account belongs to the frozen directory");
+                let Ok(wire) = UpstreamModelId::from_client_wire(wire.as_ref()) else {
+                    continue;
+                };
+                let emulated = match provider_models.and_then(|models| models.get(&wire)) {
+                    Some(capabilities) => {
+                        let Some(emulated) = capabilities.match_requirements(&requirements) else {
+                            continue;
+                        };
+                        emulated
+                    }
+                    None if self.is_known_upstream_model(&wire)
+                        || self.exhaustive_provider_catalogs.contains(provider) =>
+                    {
+                        continue;
+                    }
+                    None => BTreeSet::new(),
+                };
+                candidate_emulated_features.extend(emulated);
+                account_upstream_models.insert(account_id.clone(), wire);
+            }
+            if saw_provider_account && account_upstream_models.is_empty() {
+                continue;
+            }
+            if !saw_provider_account {
+                let emulated = match provider_models.and_then(|models| models.get(&upstream_model))
+                {
+                    Some(capabilities) => {
+                        let Some(emulated) = capabilities.match_requirements(&requirements) else {
+                            continue;
+                        };
+                        emulated
+                    }
+                    None if known_model || self.exhaustive_provider_catalogs.contains(provider) => {
+                        continue;
+                    }
+                    None => BTreeSet::new(),
+                };
+                candidate_emulated_features = emulated;
+            }
+            let candidate_account_ids: BTreeSet<_> =
+                account_upstream_models.keys().cloned().collect();
+            let candidate_scope = if candidate_account_ids.is_empty() {
+                Arc::clone(&account_scope)
+            } else {
+                Arc::new(account_scope.restricted_to(&BTreeSet::new(), &candidate_account_ids))
             };
+            // 没有账号改写模型时保留原 Provider 级模型契约；账号资格仍由冻结范围约束。
+            if account_upstream_models
+                .values()
+                .all(|wire| wire == &upstream_model)
+            {
+                account_upstream_models.clear();
+            }
             candidates.push(ProviderCandidate {
                 provider: provider.clone(),
                 model_presentation: self
@@ -1175,8 +1379,9 @@ impl RuntimeSnapshot {
                     .and_then(|models| models.get(&upstream_model))
                     .cloned(),
                 upstream_model: Some(upstream_model.clone()),
-                emulated_features,
-                account_scope: Arc::clone(&account_scope),
+                account_upstream_models: Arc::new(account_upstream_models),
+                emulated_features: candidate_emulated_features,
+                account_scope: candidate_scope,
             });
         }
 
@@ -1234,6 +1439,7 @@ impl RuntimeSnapshot {
         account_scope: Arc<FrozenAccountScope>,
         context: &RoutingContext,
     ) -> Result<RoutingPlan, RoutingError> {
+        let account_scope = Arc::new(account_scope.without_model_mappings());
         let available = !account_scope.provider_kinds().is_empty()
             && account_scope.provider_kinds().contains(provider)
             && self.providers.contains(provider)
@@ -1285,6 +1491,7 @@ impl RuntimeSnapshot {
                 })
                 .cloned(),
             upstream_model: upstream_model.cloned(),
+            account_upstream_models: Arc::new(BTreeMap::new()),
             emulated_features: BTreeSet::new(),
             account_scope: Arc::clone(&account_scope),
         };

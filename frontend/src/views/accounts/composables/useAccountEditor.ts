@@ -14,6 +14,13 @@ export function useAccountEditor(options: {
   reloadAccounts: () => Promise<unknown>
   reloadGroups: () => Promise<unknown>
 }) {
+  function modelMappingIdError(value: string): string | undefined {
+    const bytes = new TextEncoder().encode(value).length
+    if (!value || value.trim() !== value || bytes > 256 || value.startsWith('__') || /\p{Cc}/u.test(value))
+      return t('accounts.modelMappings.invalidId')
+    return undefined
+  }
+
   const showEditModal = shallowRef(false)
   // 保存后列表可能因筛选移除该账号，编辑窗口的退场仍需保留原账号内容。
   const editingAccount = shallowRef<Account | null>(null)
@@ -22,6 +29,7 @@ export function useAccountEditor(options: {
   const concurrencyLimit = shallowRef('')
   const weight = shallowRef('1')
   const modelAccess = ref<AccountModelAccess | undefined>()
+  const modelMappings = ref<Array<{ requestedModel: string, upstreamModel: string }>>([])
   const proxyMode = shallowRef('preserve')
   const proxyId = shallowRef('')
   const selectedGroupIds = ref<string[]>([])
@@ -72,6 +80,10 @@ export function useAccountEditor(options: {
     concurrencyLimit.value = concurrencyLimitInput(account.concurrencyLimit)
     weight.value = String(account.weight)
     modelAccess.value = { ...account.modelAccess, models: [...account.modelAccess.models] }
+    modelMappings.value = Object.entries(account.modelMappings).map(([requestedModel, upstreamModel]) => ({
+      requestedModel,
+      upstreamModel,
+    }))
     selectedGroupIds.value = account.groups.map(group => group.id)
     showEditModal.value = true
     if (isOpenAiApiKeyAccount(account) || isOpenAiOAuthAccount(account))
@@ -99,6 +111,31 @@ export function useAccountEditor(options: {
       ZNotification.warning({ message: modelError })
       return
     }
+    let mappings: Record<string, string> | undefined
+    if (isApiKey) {
+      const entries: Array<[string, string]> = []
+      const seen = new Set<string>()
+      for (const row of modelMappings.value) {
+        const requested = row.requestedModel.trim()
+        const upstream = row.upstreamModel.trim()
+        if (!requested || !upstream) {
+          ZNotification.warning({ message: t('accounts.modelMappings.incomplete') })
+          return
+        }
+        const invalid = modelMappingIdError(requested) ?? modelMappingIdError(upstream)
+        if (invalid) {
+          ZNotification.warning({ message: invalid })
+          return
+        }
+        if (seen.has(requested)) {
+          ZNotification.warning({ message: t('accounts.modelMappings.duplicate', { model: requested }) })
+          return
+        }
+        seen.add(requested)
+        entries.push([requested, upstream])
+      }
+      mappings = Object.fromEntries(entries)
+    }
     const scheduling = parseAccountSchedulingForm(concurrencyLimit.value, weight.value)
     if (proxyMode.value === 'proxy' && !proxyId.value.trim()) {
       ZNotification.warning({ message: t('accounts.batchEdit.proxyRequired') })
@@ -118,6 +155,7 @@ export function useAccountEditor(options: {
         concurrencyLimit: scheduling.values.concurrencyLimit,
         weight: scheduling.values.weight,
         modelAccess: modelAccess.value,
+        modelMappings: mappings,
         groupIds: [...new Set(selectedGroupIds.value)],
       }
       const connectionChanged = isApiKey && (
@@ -163,6 +201,7 @@ export function useAccountEditor(options: {
     concurrencyLimit,
     weight,
     modelAccess,
+    modelMappings,
     proxyMode,
     proxyId,
     selectedGroupIds,

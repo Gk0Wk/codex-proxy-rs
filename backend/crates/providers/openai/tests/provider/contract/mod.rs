@@ -1,6 +1,7 @@
 //! OpenAI 执行合同测试入口，以及协议转换与发送前校验测试
 
 mod account_isolation;
+mod account_model_mappings;
 mod capacity;
 mod cookies;
 mod correlation;
@@ -12308,6 +12309,7 @@ async fn invalid_oauth_candidate_does_not_block_another_websocket_account() {
             account: invalid,
             credential: PlaintextCredential::new(Map::new()),
             model_access: None,
+            model_mappings: Default::default(),
         })
         .await
         .unwrap();

@@ -525,6 +525,7 @@ pub struct RoutingContext {
 pub struct ProviderCandidate {
     provider: ProviderKind,
     upstream_model: Option<UpstreamModelId>,
+    account_upstream_models: Arc<BTreeMap<crate::account::ProviderAccountId, UpstreamModelId>>,
     model_presentation: Option<ModelPresentation>,
     emulated_features: BTreeSet<Feature>,
     account_scope: Arc<FrozenAccountScope>,
@@ -545,6 +546,20 @@ impl ProviderCandidate {
     #[must_use]
     pub const fn upstream_model(&self) -> Option<&UpstreamModelId> {
         self.upstream_model.as_ref()
+    }
+
+    /// 返回本次请求冻结给指定账号的真实上游模型
+    #[must_use]
+    pub fn account_upstream_model(
+        &self,
+        account_id: &crate::account::ProviderAccountId,
+    ) -> Option<&UpstreamModelId> {
+        self.account_upstream_models.get(account_id).or_else(|| {
+            self.account_upstream_models
+                .is_empty()
+                .then_some(self.upstream_model.as_ref())
+                .flatten()
+        })
     }
 
     #[must_use]

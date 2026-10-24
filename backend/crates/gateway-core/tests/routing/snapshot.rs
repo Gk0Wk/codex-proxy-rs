@@ -1,6 +1,6 @@
 //! 验证路由快照编译的模型别名、版本一致性与请求事实冻结
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -8,7 +8,9 @@ use futures::executor::block_on;
 use futures::future::BoxFuture;
 
 use gateway_core::account::FastMode;
-use gateway_core::operation::OperationKind;
+use gateway_core::operation::{
+    Feature, GenerateRequest, Operation, OperationKind, ProtocolPayload,
+};
 use gateway_core::policy::{ClientApiKeyId, PlaintextClientApiKey, RateLimits};
 use gateway_core::routing::extensions::{
     ExtensionPreparationError, ExtensionPreparationPort, ExtensionSetId, ExtensionSetLease,
@@ -797,6 +799,389 @@ fn mixed_catalog_should_bind_the_mapped_upstream_model() {
 }
 
 #[test]
+fn account_model_mapping_should_keep_one_provider_candidate_and_freeze_each_wire_target() {
+    use gateway_core::account::{
+        AccountModelAccess, AccountModelAccessMode, AccountModelMappings, ProviderAccountId,
+    };
+
+    struct AccountMappingCatalog {
+        wire_a: ProviderAccountId,
+        wire_b: ProviderAccountId,
+    }
+
+    impl ProviderCatalogPort for AccountMappingCatalog {
+        fn catalog_generations(&self) -> BTreeMap<ProviderKind, ProviderCatalogGeneration> {
+            mixed_catalog_generations()
+        }
+
+        fn model_catalog_is_exhaustive(&self, _: &ProviderKind) -> bool {
+            false
+        }
+
+        fn query_model_capabilities(
+            &self,
+            _: &ProviderKind,
+        ) -> BoxFuture<'_, Result<Vec<ProviderModelCapabilities>, ProviderCatalogUnavailable>>
+        {
+            let wire_a = self.wire_a.clone();
+            let wire_b = self.wire_b.clone();
+            Box::pin(async move {
+                Ok(vec![
+                    ProviderModelCapabilities::new(
+                        UpstreamModelId::new("canonical-model").unwrap(),
+                        ModelCapabilities::new(BTreeSet::new(), None),
+                    ),
+                    ProviderModelCapabilities::new(
+                        UpstreamModelId::new("wire-a").unwrap(),
+                        super::capabilities().with_feature(
+                            Feature::Tools,
+                            gateway_core::routing::SupportLevel::Emulated,
+                        ),
+                    )
+                    .with_presentation(ModelPresentation::new(
+                        Some("Wire A".into()),
+                        Some("first wire".into()),
+                    ))
+                    .with_catalog_accounts(BTreeSet::from([wire_a])),
+                    ProviderModelCapabilities::new(
+                        UpstreamModelId::new("wire-b").unwrap(),
+                        super::capabilities().with_feature(
+                            Feature::Tools,
+                            gateway_core::routing::SupportLevel::Native,
+                        ),
+                    )
+                    .with_presentation(ModelPresentation::new(
+                        Some("Wire B".into()),
+                        Some("second wire".into()),
+                    ))
+                    .with_catalog_accounts(BTreeSet::from([wire_b])),
+                ])
+            })
+        }
+    }
+
+    fn mixed_catalog_generations() -> BTreeMap<ProviderKind, ProviderCatalogGeneration> {
+        BTreeMap::from([(
+            ProviderKind::new("openai").unwrap(),
+            ProviderCatalogGeneration::new(1),
+        )])
+    }
+
+    let wire_a = ProviderAccountId::new("acct_wire_a").unwrap();
+    let wire_b = ProviderAccountId::new("acct_wire_b").unwrap();
+    let mappings = |wire: &str| {
+        AccountModelMappings::new(BTreeMap::from([(
+            "canonical-model".to_owned(),
+            wire.to_owned(),
+        )]))
+        .unwrap()
+    };
+    let access = |wire: &str| {
+        AccountModelAccess::new(AccountModelAccessMode::Allowlist, vec![wire.to_owned()]).unwrap()
+    };
+    let settings = super::settings().with_model_mappings(BTreeMap::from([(
+        "public-model".to_owned(),
+        "canonical-model".to_owned(),
+    )]));
+    let facts = SnapshotFacts::new(
+        revision(1),
+        revision(1),
+        settings,
+        vec![],
+        vec![],
+        vec![
+            SnapshotProviderAccountFacts::new(wire_a.clone(), "openai")
+                .with_model_access(access("wire-a"))
+                .with_model_mappings(
+                    AccountModelMappings::new(BTreeMap::from([
+                        ("canonical-model".to_owned(), "wire-a".to_owned()),
+                        ("missing-canonical".to_owned(), "missing-wire".to_owned()),
+                    ]))
+                    .unwrap(),
+                ),
+            SnapshotProviderAccountFacts::new(wire_b.clone(), "openai")
+                .with_model_access(access("wire-b"))
+                .with_model_mappings(mappings("wire-b")),
+        ],
+        vec![],
+    );
+    let snapshot = block_on(
+        RuntimeSnapshotCompiler::new(
+            Arc::new(TestSnapshotStore::new(Ok(facts))),
+            Arc::new(AccountMappingCatalog {
+                wire_a: wire_a.clone(),
+                wire_b: wire_b.clone(),
+            }),
+        )
+        .compile(),
+    )
+    .unwrap();
+    let scope = snapshot.all_account_scope();
+    assert!(scope.allows_model(&wire_a, "canonical-model"));
+    assert!(scope.allows_model(&wire_b, "canonical-model"));
+
+    let public = PublicModelId::new("public-model").unwrap();
+    let canonical = PublicModelId::new("canonical-model").unwrap();
+    let listed = snapshot.public_models_for_scope(&scope);
+    assert!(listed.contains(&public));
+    assert!(listed.contains(&canonical));
+    assert!(!listed.contains(&PublicModelId::new("missing-canonical").unwrap()));
+    let profile = snapshot
+        .public_model_profiles_for_scope(&scope)
+        .into_iter()
+        .find(|profile| profile.model() == &canonical)
+        .expect("canonical profile from a real wire object");
+    assert_eq!(profile.presentation().display_name(), Some("Wire A"));
+    let only_b = scope.restricted_to(&BTreeSet::new(), &BTreeSet::from([wire_b.clone()]));
+    let profile_b = snapshot
+        .public_model_profiles_for_scope(&only_b)
+        .into_iter()
+        .find(|profile| profile.model() == &canonical)
+        .expect("B profile from B wire object");
+    assert_eq!(profile_b.presentation().display_name(), Some("Wire B"));
+
+    let plan = snapshot
+        .plan(
+            &public,
+            &super::operation(),
+            Arc::clone(&scope),
+            &Default::default(),
+        )
+        .unwrap();
+    assert_eq!(plan.candidates().len(), 1);
+    let candidate = &plan.candidates()[0];
+    assert_eq!(candidate.provider().as_str(), "openai");
+    assert!(
+        candidate
+            .account_upstream_model(
+                &gateway_core::account::ProviderAccountId::new("acct_unknown").unwrap()
+            )
+            .is_none()
+    );
+    assert_eq!(
+        candidate
+            .account_upstream_model(&wire_a)
+            .map(|model| model.as_str()),
+        Some("wire-a")
+    );
+    assert_eq!(
+        candidate
+            .account_upstream_model(&wire_b)
+            .map(|model| model.as_str()),
+        Some("wire-b")
+    );
+    let body = serde_json::json!({
+        "model": "public-model",
+        "input": "hello",
+        "tools": [{"type": "function", "name": "lookup"}]
+    });
+    let tools_operation = Operation::Generate(GenerateRequest::from_protocol_payload(
+        ProtocolPayload::json_object("openai", body.as_object().unwrap().clone()).unwrap(),
+    ));
+    let tools_plan = snapshot
+        .plan(&public, &tools_operation, scope, &Default::default())
+        .unwrap();
+    assert_eq!(tools_plan.candidates().len(), 1);
+    assert!(
+        tools_plan.candidates()[0]
+            .emulated_features()
+            .contains(&Feature::Tools)
+    );
+}
+
+struct MappingOperationCatalog {
+    account_id: gateway_core::account::ProviderAccountId,
+}
+
+impl ProviderCatalogPort for MappingOperationCatalog {
+    fn catalog_generations(&self) -> BTreeMap<ProviderKind, ProviderCatalogGeneration> {
+        BTreeMap::from([(
+            ProviderKind::new("openai").unwrap(),
+            ProviderCatalogGeneration::new(1),
+        )])
+    }
+
+    fn model_catalog_is_exhaustive(&self, _: &ProviderKind) -> bool {
+        false
+    }
+
+    fn query_model_capabilities(
+        &self,
+        _: &ProviderKind,
+    ) -> BoxFuture<'_, Result<Vec<ProviderModelCapabilities>, ProviderCatalogUnavailable>> {
+        let account_id = self.account_id.clone();
+        Box::pin(async move {
+            let operations = BTreeSet::from([
+                OperationKind::Generate,
+                OperationKind::GenerateImage,
+                OperationKind::Search,
+            ]);
+            Ok(vec![
+                ProviderModelCapabilities::new(
+                    UpstreamModelId::new("canonical-model").unwrap(),
+                    ModelCapabilities::new(operations.clone(), Some(16_000)),
+                ),
+                ProviderModelCapabilities::new(
+                    UpstreamModelId::new("wire-model").unwrap(),
+                    ModelCapabilities::new(operations, Some(16_000)),
+                )
+                .with_catalog_accounts(BTreeSet::from([account_id])),
+            ])
+        })
+    }
+}
+
+fn mapping_operation_snapshot(allowed_model: &str) -> gateway_core::routing::RuntimeSnapshot {
+    use gateway_core::account::{
+        AccountModelAccess, AccountModelAccessMode, AccountModelMappings, ProviderAccountId,
+    };
+
+    let account_id = ProviderAccountId::new("acct_mapping_operation").unwrap();
+    let access = AccountModelAccess::new(
+        AccountModelAccessMode::Allowlist,
+        vec![allowed_model.to_owned()],
+    )
+    .unwrap();
+    let mappings = AccountModelMappings::new(BTreeMap::from([(
+        "canonical-model".to_owned(),
+        "wire-model".to_owned(),
+    )]))
+    .unwrap();
+    let facts = SnapshotFacts::new(
+        revision(1),
+        revision(1),
+        super::settings(),
+        vec![SnapshotClientPolicyFacts::new(
+            ClientApiKeyId::new("key_mapping_operation").unwrap(),
+            PlaintextClientApiKey::new("sk_mapping_operation").unwrap(),
+            vec![],
+            RateLimits::unlimited(),
+        )],
+        vec![],
+        vec![
+            SnapshotProviderAccountFacts::new(account_id.clone(), "openai")
+                .with_model_access(access)
+                .with_model_mappings(mappings),
+        ],
+        vec![],
+    );
+    block_on(
+        RuntimeSnapshotCompiler::new(
+            Arc::new(TestSnapshotStore::new(Ok(facts))),
+            Arc::new(MappingOperationCatalog { account_id }),
+        )
+        .compile(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn account_model_mapping_should_apply_only_to_generate_routing_and_access() {
+    use bytes::Bytes;
+    use gateway_core::account::ProviderAccountId;
+    use gateway_core::operation::{
+        ImageRequest, ImageRequestKind, RawJsonPayload, StandaloneSearchRequest,
+    };
+
+    let canonical = PublicModelId::new("canonical-model").unwrap();
+    let canonical_wire = UpstreamModelId::new("canonical-model").unwrap();
+    let mapped_wire = UpstreamModelId::new("wire-model").unwrap();
+    let account_id = ProviderAccountId::new("acct_mapping_operation").unwrap();
+    let provider = ProviderKind::new("openai").unwrap();
+    let image = Operation::GenerateImage(ImageRequest::from_raw_json(
+        ImageRequestKind::Generation,
+        RawJsonPayload::new(
+            "openai",
+            Bytes::from_static(br#"{"model":"canonical-model","prompt":"draw"}"#),
+        )
+        .unwrap(),
+    ));
+    let search = Operation::Search(StandaloneSearchRequest::from_raw_json(
+        RawJsonPayload::new(
+            "openai",
+            Bytes::from_static(br#"{"model":"canonical-model","query":"search"}"#),
+        )
+        .unwrap(),
+    ));
+
+    let snapshot = mapping_operation_snapshot("wire-model");
+    let generate = snapshot
+        .plan(
+            &canonical,
+            &super::operation(),
+            snapshot.all_account_scope(),
+            &Default::default(),
+        )
+        .expect("generate still requires the mapped wire allowlist");
+    assert_eq!(
+        generate.candidates()[0]
+            .account_upstream_model(&account_id)
+            .unwrap(),
+        &mapped_wire
+    );
+
+    for operation in [image.clone(), search] {
+        let snapshot = mapping_operation_snapshot("canonical-model");
+        let plan = snapshot
+            .plan(
+                &canonical,
+                &operation,
+                snapshot.all_account_scope(),
+                &Default::default(),
+            )
+            .expect("non-generate routing uses the original model");
+        assert_eq!(
+            plan.candidates()[0].account_upstream_model(&account_id),
+            Some(&canonical_wire),
+            "{:?}",
+            operation.kind()
+        );
+    }
+
+    let snapshot = mapping_operation_snapshot("canonical-model");
+    assert!(
+        snapshot
+            .plan(
+                &canonical,
+                &super::operation(),
+                snapshot.all_account_scope(),
+                &Default::default(),
+            )
+            .is_err()
+    );
+    let snapshot = mapping_operation_snapshot("wire-model");
+    assert!(
+        snapshot
+            .plan(
+                &canonical,
+                &image,
+                snapshot.all_account_scope(),
+                &Default::default(),
+            )
+            .is_err()
+    );
+
+    let snapshot = mapping_operation_snapshot("canonical-model");
+    let endpoint = snapshot
+        .plan_provider_endpoint(
+            &provider,
+            Some(&canonical_wire),
+            &image,
+            snapshot.all_account_scope(),
+            &Default::default(),
+        )
+        .expect("native endpoints keep the original model");
+    assert_eq!(
+        endpoint.candidates()[0].upstream_model(),
+        Some(&canonical_wire)
+    );
+    assert_eq!(
+        endpoint.candidates()[0].account_upstream_model(&account_id),
+        Some(&canonical_wire)
+    );
+}
+
+#[test]
 fn mixed_catalog_should_keep_discovery_routes_for_unlisted_models() {
     let snapshot = mixed_catalog_snapshot();
     let plan = snapshot
@@ -995,6 +1380,47 @@ fn compiler_retries_when_provider_publishes_catalog_during_compilation() {
             .map(|profile| profile.model().as_str())
             .collect::<Vec<_>>(),
         vec!["public-model", "upstream-model"],
+    );
+}
+
+#[test]
+fn empty_account_mapping_preserves_provider_profiles_without_account_sources() {
+    let facts = SnapshotFacts::new(
+        revision(1),
+        revision(1),
+        SettingsValues::new(
+            3,
+            "smart",
+            BTreeMap::from([("public-model".to_owned(), "upstream-model".to_owned())]),
+            None,
+            None,
+        ),
+        vec![],
+        vec![],
+        vec![SnapshotProviderAccountFacts::new(
+            gateway_core::account::ProviderAccountId::new("acct_profile_alpha").unwrap(),
+            "alpha",
+        )],
+        vec![],
+    );
+    let snapshot = block_on(
+        RuntimeSnapshotCompiler::new(
+            Arc::new(TestSnapshotStore::new(Ok(facts))),
+            Arc::new(PublishingCatalog {
+                generation: AtomicU64::new(0),
+                queries: AtomicUsize::new(0),
+            }),
+        )
+        .compile(),
+    )
+    .unwrap();
+    let profiles = snapshot.public_model_profiles_for_scope(&snapshot.all_account_scope());
+    assert_eq!(
+        profiles
+            .iter()
+            .map(|profile| profile.model().as_str())
+            .collect::<Vec<_>>(),
+        ["public-model", "upstream-model"]
     );
 }
 

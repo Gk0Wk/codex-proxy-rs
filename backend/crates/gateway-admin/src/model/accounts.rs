@@ -38,6 +38,7 @@ pub struct AccountImportSettings {
     pub concurrency_limit: Option<AccountConcurrencyLimit>,
     pub weight: AccountWeight,
     pub model_access: Option<gateway_core::account::AccountModelAccess>,
+    pub model_mappings: Option<gateway_core::account::AccountModelMappings>,
     pub group_ids: Vec<gateway_core::routing::AccountGroupId>,
 }
 
@@ -123,6 +124,7 @@ pub struct AccountRecord {
     pub concurrency_limit: Option<AccountConcurrencyLimit>,
     pub weight: AccountWeight,
     pub model_access: gateway_core::account::AccountModelAccess,
+    pub model_mappings: gateway_core::account::AccountModelMappings,
     pub outbound_proxy_id: Option<String>,
     pub outbound_proxy: Option<gateway_core::account::OutboundProxy>,
     pub outbound_proxy_enabled: bool,
@@ -227,6 +229,7 @@ pub struct UpdateAccount {
     pub concurrency_limit: Option<AccountConcurrencyLimit>,
     pub weight: AccountWeight,
     pub model_access: Option<gateway_core::account::AccountModelAccess>,
+    pub model_mappings: Option<gateway_core::account::AccountModelMappings>,
     pub group_ids: Vec<gateway_core::routing::AccountGroupId>,
     pub outbound_proxy: Option<super::proxies::AccountProxySelection>,
 }
@@ -246,6 +249,7 @@ pub struct BatchUpdateAccounts {
     pub concurrency_limit: Option<Option<AccountConcurrencyLimit>>,
     pub weight: Option<AccountWeight>,
     pub model_access: Option<gateway_core::account::AccountModelAccess>,
+    pub model_mappings: Option<gateway_core::account::AccountModelMappings>,
     pub group_ids: Option<Vec<gateway_core::routing::AccountGroupId>>,
     pub outbound_proxy: Option<super::proxies::AccountProxySelection>,
 }

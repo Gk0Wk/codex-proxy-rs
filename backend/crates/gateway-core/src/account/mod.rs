@@ -7,9 +7,13 @@ mod location;
 pub use location::{InvalidRequestLocation, RequestLocation};
 mod model;
 mod model_access;
+mod model_mapping;
 pub use model_access::{
     AccountModelAccess, AccountModelAccessMode, InvalidAccountModelAccess,
     MAX_ACCOUNT_ACCESS_MODELS,
+};
+pub use model_mapping::{
+    AccountModelMappings, InvalidAccountModelMappings, MAX_ACCOUNT_MODEL_MAPPINGS,
 };
 mod proxy;
 pub use proxy::{InvalidOutboundProxy, OutboundProxy};

@@ -1,14 +1,14 @@
 //! 验证 OpenAI 凭据准备、事务提交、授权重试与额度刷新边界
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
-use gateway_core::account::ProviderAccountId;
+use gateway_core::account::{AccountModelMappings, ProviderAccountId};
 
 use gateway_admin::{
     AdminServices,
     model::provider_credentials::{
-        AuthorizationMutationTarget, CompleteAuthorization, CredentialDeletion, ImportCredentials,
-        ProviderQuotaRequest, StartAuthorization,
+        AuthorizationMutationTarget, CompleteAuthorization, CredentialDeletion, CredentialMutation,
+        ImportCredentials, ProviderQuotaRequest, RotateCredential, StartAuthorization,
     },
     ports::provider::ProviderAdminErrorKind,
 };
@@ -266,6 +266,90 @@ async fn openai_authorization_create_should_observe_initial_quota() {
         [Some(super::super::accounts::import_settings())]
     );
     assert_eq!(store.audit_requests(), ["oauth-start-openai-create"]);
+}
+
+#[tokio::test]
+async fn openai_oauth_authorization_should_reject_non_empty_account_model_mappings() {
+    let events = events();
+    let provider = FakeProviderAdmin::new("openai", events.clone());
+    let store = FakeAccountStore::new("openai", events.clone());
+    let services = service(provider, store).await;
+    let kind = gateway_core::routing::ProviderKind::new("openai").unwrap();
+    services
+        .credentials()
+        .for_provider(&kind)
+        .unwrap()
+        .start_authorization(StartAuthorization {
+            outbound_proxy: None,
+            context: context("oauth-mapping-rejected"),
+            name: "OAuth mapping".to_owned(),
+            reauthorization: None,
+        })
+        .await
+        .expect("start authorization");
+    let mut settings = super::super::accounts::import_settings();
+    settings.model_mappings = Some(
+        AccountModelMappings::new(BTreeMap::from([(
+            "canonical-model".to_owned(),
+            "wire-model".to_owned(),
+        )]))
+        .unwrap(),
+    );
+    services
+        .credentials()
+        .complete_authorization(
+            &kind,
+            CompleteAuthorization {
+                settings: Some(settings),
+                context: context("oauth-mapping-rejected"),
+                flow_id: "flow-test".to_owned(),
+                callback_url: "http://localhost/callback?code=test&state=test".to_owned(),
+            },
+        )
+        .await
+        .expect_err("OAuth mappings must be rejected");
+    assert!(!recorded(&events).contains(&"store.commit_authorization"));
+}
+
+#[tokio::test]
+async fn openai_oauth_rotation_should_reject_non_empty_account_model_mappings() {
+    let events = events();
+    let provider = FakeProviderAdmin::new("openai", events.clone());
+    let store = FakeAccountStore::new("openai", events.clone());
+    let services = service(provider, store).await;
+    let kind = gateway_core::routing::ProviderKind::new("openai").unwrap();
+    let error = services
+        .credentials()
+        .for_provider(&kind)
+        .unwrap()
+        .rotate(RotateCredential {
+            mutation: CredentialMutation {
+                context: context("oauth-rotation-mapping-rejected"),
+                account_id: ProviderAccountId::new("acct_test").unwrap(),
+            },
+            provider_material: document(),
+            settings: Some(gateway_admin::model::accounts::UpdateAccount {
+                account_id: "acct_test".to_owned(),
+                notes: None,
+                enabled: true,
+                concurrency_limit: None,
+                weight: gateway_core::account::AccountWeight::DEFAULT,
+                model_access: None,
+                model_mappings: Some(
+                    AccountModelMappings::new(BTreeMap::from([(
+                        "canonical-model".to_owned(),
+                        "wire-model".to_owned(),
+                    )]))
+                    .unwrap(),
+                ),
+                group_ids: Vec::new(),
+                outbound_proxy: None,
+            }),
+        })
+        .await
+        .expect_err("OAuth rotation mappings must be rejected");
+    assert_eq!(error.kind(), gateway_admin::model::AdminErrorKind::Invalid);
+    assert!(!recorded(&events).contains(&"store.commit_rotation"));
 }
 
 #[tokio::test]

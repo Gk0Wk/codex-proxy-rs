@@ -1570,62 +1570,67 @@ impl ExecutionService for DefaultExecutionService {
                     .query_client_model_catalog(scope, protocol, client_version)
                     .await?
                 else {
-                    for profile in client.snapshot.public_model_profiles_for_provider(kind) {
-                        if !client.snapshot.catalog_model_allowed_for_scope(
-                            kind,
-                            profile.model(),
-                            scope,
-                        ) {
-                            continue;
-                        }
+                    for profile in client
+                        .snapshot
+                        .public_model_profiles_for_provider_scope(kind, scope)
+                    {
                         if seen.insert(profile.model().clone()) {
                             result.push(PublicModelDescriptor::Adapted(profile));
                         }
                     }
                     continue;
                 };
-                // 保留上游顺序；映射只选择完整的目标对象，不能跨账号/模型混拼字段
-                let by_id = models
-                    .iter()
-                    .map(|entry| (entry.model.as_str(), entry))
-                    .collect::<std::collections::BTreeMap<_, _>>();
+                // 保留上游顺序；映射只选择同一账号的完整目标对象，不能跨账号/模型混拼字段
+                let source_for = |canonical: &str| {
+                    models
+                        .iter()
+                        .filter(|entry| {
+                            entry.source_accounts.iter().any(|account_id| {
+                                scope
+                                    .directory()
+                                    .account(account_id)
+                                    .is_some_and(|account| {
+                                        account.provider_kind() == kind
+                                            && scope.allows_model(account_id, canonical)
+                                            && account.wire_model(canonical).as_ref()
+                                                == entry.model.as_str()
+                                    })
+                            })
+                        })
+                        .max_by_key(|entry| {
+                            matches!(
+                                entry.content,
+                                crate::routing::ProviderModelContent::Native(_)
+                            )
+                        })
+                };
+                let mut candidates = Vec::with_capacity(models.len());
+                let mut candidate_ids = BTreeSet::new();
                 for entry in &models {
-                    let target = client.snapshot.mapped_model(entry.model.as_str());
-                    if !scope.allows_provider_model(kind, &target) {
-                        continue;
-                    }
-                    let Some(source) = by_id.get(target.as_str()) else {
-                        continue;
-                    };
                     let model = PublicModelId::new(entry.model.as_str().to_owned())
                         .map_err(|_| ProviderCatalogUnavailable)?;
-                    // 原生目录可能比路由快照更新，不能向客户端公布当前已知不可路由的模型
-                    if !client
-                        .snapshot
-                        .contains_public_model_for_provider(&model, kind)
-                    {
-                        continue;
-                    }
-                    if seen.insert(model.clone()) {
-                        result.push(source.content.for_public_model(model));
+                    if candidate_ids.insert(model.clone()) {
+                        candidates.push(model);
                     }
                 }
                 for model in client.snapshot.public_models_for_provider(kind) {
-                    let target = client.snapshot.mapped_model(model.as_str());
-                    if !scope.allows_provider_model(kind, &target) {
-                        continue;
+                    if candidate_ids.insert(model.clone()) {
+                        candidates.push(model);
                     }
-                    if target == model.as_str() || seen.contains(&model) {
-                        continue;
-                    }
-                    if !client
-                        .snapshot
-                        .contains_public_model_for_provider(&model, kind)
+                }
+                for model in candidates {
+                    let canonical = client.snapshot.mapped_model(model.as_str());
+                    if !scope.allows_provider_model(kind, &canonical)
+                        || !client
+                            .snapshot
+                            .contains_public_model_for_provider(&model, kind)
                     {
                         continue;
                     }
-                    if let Some(source) = by_id.get(target.as_str()) {
-                        seen.insert(model.clone());
+                    let source = source_for(&canonical);
+                    if let Some(source) = source
+                        && seen.insert(model.clone())
+                    {
                         result.push(source.content.for_public_model(model));
                     }
                 }

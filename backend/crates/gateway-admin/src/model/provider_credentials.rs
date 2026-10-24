@@ -101,6 +101,7 @@ impl fmt::Debug for PrepareCredentialImport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedCredentialCreate {
     pub model_access: Option<gateway_core::account::AccountModelAccess>,
+    pub model_mappings: Option<gateway_core::account::AccountModelMappings>,
     pub outbound_proxy: Option<gateway_core::account::OutboundProxy>,
     pub account_id: ProviderAccountId,
     pub provider_kind: ProviderKind,

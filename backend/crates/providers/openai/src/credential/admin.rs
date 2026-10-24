@@ -442,6 +442,7 @@ impl CodexCredentialAdmin {
             account,
             credential,
             model_access: None,
+            model_mappings: None,
         })
     }
 
@@ -586,6 +587,7 @@ impl CodexCredentialAdmin {
         );
         Ok(NewProviderAccount {
             model_access: Default::default(),
+            model_mappings: Default::default(),
             account,
             credential,
         })
@@ -647,6 +649,7 @@ impl CodexCredentialAdmin {
         );
         Ok(NewProviderAccount {
             model_access: Default::default(),
+            model_mappings: Default::default(),
             account,
             credential,
         })
@@ -1132,6 +1135,7 @@ impl CodexCredentialAdminService {
                 })?;
             accounts.push(NewProviderAccount {
                 model_access: candidate.model_access,
+                model_mappings: None,
                 account: prepared
                     .account
                     .with_outbound_proxy(candidate.outbound_proxy),

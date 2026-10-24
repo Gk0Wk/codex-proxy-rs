@@ -607,6 +607,9 @@ impl AccountStore for PgAdminAccountStore {
         if command.model_access.is_some() {
             changed_fields.push("model_access".to_owned());
         }
+        if command.model_mappings.is_some() {
+            changed_fields.push("model_mappings".to_owned());
+        }
         if command.outbound_proxy.is_some() {
             changed_fields.push("outbound_proxy".to_owned());
         }
@@ -622,6 +625,7 @@ impl AccountStore for PgAdminAccountStore {
                 concurrency_limit: Some(command.concurrency_limit),
                 weight: Some(command.weight),
                 model_access: command.model_access,
+                model_mappings: command.model_mappings,
                 group_ids: Some(command.group_ids),
                 outbound_proxy: command.outbound_proxy,
                 audit: mutation_audit(
@@ -764,6 +768,7 @@ impl AccountStore for PgAdminAccountStore {
             (command.concurrency_limit.is_some(), "concurrency_limit"),
             (command.weight.is_some(), "weight"),
             (command.group_ids.is_some(), "groups"),
+            (command.model_mappings.is_some(), "model_mappings"),
         ] {
             if changed {
                 changed_fields.push(field.to_owned());
@@ -784,6 +789,7 @@ impl AccountStore for PgAdminAccountStore {
                 concurrency_limit: command.concurrency_limit,
                 weight: command.weight,
                 model_access: command.model_access,
+                model_mappings: command.model_mappings,
                 group_ids: command.group_ids,
                 outbound_proxy: command.outbound_proxy,
                 audit: mutation_audit(
@@ -920,6 +926,15 @@ pub(super) fn prepare_import(
     {
         changed_fields.push("model_access".to_owned());
     }
+    if settings
+        .as_ref()
+        .is_some_and(|settings| settings.model_mappings.is_some())
+        || accounts
+            .iter()
+            .any(|account| account.model_mappings.is_some())
+    {
+        changed_fields.push("model_mappings".to_owned());
+    }
     if let Some(settings) = &settings {
         changed_fields
             .extend(["enabled", "concurrency_limit", "weight", "group_ids"].map(str::to_owned));
@@ -1005,6 +1020,9 @@ pub(super) fn prepare_rotation(
             .extend(["enabled", "concurrency_limit", "weight", "groups"].map(str::to_owned));
         if settings.model_access.is_some() {
             changed_fields.push("model_access".to_owned());
+        }
+        if settings.model_mappings.is_some() {
+            changed_fields.push("model_mappings".to_owned());
         }
         if settings.outbound_proxy.is_some() {
             changed_fields.push("outbound_proxy".to_owned());

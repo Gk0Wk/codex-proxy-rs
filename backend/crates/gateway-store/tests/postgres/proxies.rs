@@ -358,6 +358,7 @@ async fn disabled_proxy_projects_direct_while_preserving_bindings_and_credential
                         concurrency_limit: None,
                         weight: None,
                         model_access: None,
+                        model_mappings: Default::default(),
                         group_ids: None,
                         outbound_proxy: Some(AccountProxySelection::Saved(saved.id.clone())),
                     },
@@ -393,6 +394,7 @@ fn update(account_id: &str, selection: AccountProxySelection) -> UpdateAccount {
     UpdateAccount {
         notes: None,
         model_access: Default::default(),
+        model_mappings: Default::default(),
         account_id: account_id.to_owned(),
         enabled: true,
         concurrency_limit: None,
@@ -1164,6 +1166,7 @@ async fn legacy_urls_join_one_catalog_entry_and_invalid_batch_rolls_back() {
             .batch_update_accounts(
                 BatchUpdateAccounts {
                     model_access: Default::default(),
+                    model_mappings: Default::default(),
                     account_ids: vec!["acct_one".to_owned(), "acct_missing".to_owned()],
                     enabled: Some(false),
                     concurrency_limit: Some(None),

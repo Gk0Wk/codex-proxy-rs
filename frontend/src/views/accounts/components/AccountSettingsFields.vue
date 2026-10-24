@@ -4,6 +4,7 @@ import type { AccountGroupRef, AccountModelAccess } from '@/api'
 import { ZFormItem, ZInput, ZSwitch } from '@codex-proxy/ui'
 import { useI18n } from 'vue-i18n'
 import AccountGroupCheckboxGrid from '@/components/AccountGroupCheckboxGrid.vue'
+import ModelAliasesCard from '@/views/settings/components/ModelAliasesCard.vue'
 import AccountModelAccessField from './AccountModelAccessField.vue'
 import AccountProxyField from './AccountProxyField.vue'
 
@@ -17,23 +18,56 @@ withDefaults(defineProps<{
   preserveProxy?: boolean
   preserveModelAccess?: boolean
   showScheduling?: boolean
+  showModelMappings?: boolean
   proxyError?: string
-}>(), { preserveProxy: true, showScheduling: true })
+}>(), { preserveProxy: true, showScheduling: true, showModelMappings: false })
 
 const { t } = useI18n({ useScope: 'global' })
 
 const modelAccess = defineModel<AccountModelAccess | undefined>('modelAccess', { required: true })
+const modelMappings = defineModel<Array<{ requestedModel: string, upstreamModel: string }>>('modelMappings', {
+  default: () => [],
+})
 const enabled = defineModel<boolean>('enabled', { required: true })
 const concurrencyLimit = defineModel<string>('concurrencyLimit', { required: true })
 const weight = defineModel<string>('weight', { required: true })
 const proxyMode = defineModel<string>('proxyMode', { required: true })
 const proxyId = defineModel<string>('proxyId', { required: true })
 const selectedGroupIds = defineModel<string[]>('selectedGroupIds', { required: true })
+
+function addModelMapping() {
+  modelMappings.value = [...modelMappings.value, { requestedModel: '', upstreamModel: '' }]
+}
+
+function updateModelMapping(index: number, key: 'requestedModel' | 'upstreamModel', value: string) {
+  const rows = [...modelMappings.value]
+  if (!rows[index])
+    return
+  rows[index] = { ...rows[index], [key]: value }
+  modelMappings.value = rows
+}
+
+function removeModelMapping(index: number) {
+  const rows = [...modelMappings.value]
+  rows.splice(index, 1)
+  modelMappings.value = rows
+}
 </script>
 
 <template>
   <div class="grid gap-5">
     <AccountModelAccessField v-model="modelAccess" :account-id="accountId" :disabled="disabled" :allow-preserve="preserveModelAccess" />
+    <ModelAliasesCard
+      v-if="showModelMappings"
+      :mappings="modelMappings"
+      :title="t('accounts.modelMappings.title')"
+      :description="t('accounts.modelMappings.description')"
+      :add-label="t('accounts.modelMappings.add')"
+      :disabled="disabled"
+      @add-mapping="addModelMapping"
+      @update-mapping="updateModelMapping"
+      @remove-mapping="removeModelMapping"
+    />
     <div v-if="showScheduling" class="flex min-h-6 items-center justify-between gap-3">
       <span class="text-cp leading-none font-medium text-cp-text-secondary">{{ t('accounts.scheduling.scheduling') }}</span>
       <ZSwitch

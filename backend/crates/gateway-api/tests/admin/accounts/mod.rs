@@ -390,6 +390,26 @@ mod batch_update {
     }
 
     #[test]
+    fn batch_update_should_accept_only_account_model_mapping_as_a_mutation() {
+        let request: BatchUpdateAccountsRequest = serde_json::from_value(json!({
+            "accountIds": ["acct_test"],
+            "modelMappings": {"canonical-model": "wire-model"}
+        }))
+        .expect("mapping-only update");
+        request.validate().expect("valid mapping update");
+        let mappings = request.model_mappings.expect("mappings");
+        assert_eq!(mappings.resolve("canonical-model"), "wire-model");
+
+        assert!(
+            serde_json::from_value::<BatchUpdateAccountsRequest>(json!({
+                "accountIds": ["acct_test"],
+                "modelMappings": {"canonical-model": ""}
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn batch_update_should_reject_invalid_scheduling_bounds_and_distinguish_clear_from_preserve() {
         for (concurrency_limit, weight, field) in [
             (json!(0), json!(1), "concurrencyLimit"),

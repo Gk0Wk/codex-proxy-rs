@@ -37,6 +37,7 @@ pub(crate) fn admin_account_record(
         concurrency_limit: summary.concurrency_limit,
         weight: summary.weight,
         model_access: summary.model_access,
+        model_mappings: summary.model_mappings,
         credential_state: summary.credential_state,
         credential_observed_at: summary.credential_observed_at,
         quota: summary.quota,
@@ -68,6 +69,7 @@ pub(crate) fn prepared_account(
         concurrency_limit: None,
         weight: AccountWeight::DEFAULT,
         model_access: credential.model_access,
+        model_mappings: credential.model_mappings,
         credential_state: credential.credential_state,
         credential_observed_at: credential.credential_observed_at,
     })

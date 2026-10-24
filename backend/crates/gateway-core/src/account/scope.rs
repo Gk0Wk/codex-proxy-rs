@@ -4,6 +4,7 @@ use super::{FastMode, ProviderAccountId};
 use crate::identity::ProviderKind;
 use crate::validation::{IdentifierError, RoutingError};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fmt,
     sync::Arc,
@@ -48,6 +49,7 @@ pub struct RuntimeAccount {
     provider_kind: ProviderKind,
     group_ids: Arc<BTreeSet<AccountGroupId>>,
     model_access: super::AccountModelAccess,
+    model_mappings: super::AccountModelMappings,
 }
 
 impl RuntimeAccount {
@@ -57,6 +59,7 @@ impl RuntimeAccount {
             provider_kind,
             group_ids: Arc::new(group_ids),
             model_access: super::AccountModelAccess::all(),
+            model_mappings: super::AccountModelMappings::default(),
         }
     }
 
@@ -69,6 +72,22 @@ impl RuntimeAccount {
     #[must_use]
     pub const fn model_access(&self) -> &super::AccountModelAccess {
         &self.model_access
+    }
+
+    #[must_use]
+    pub fn with_model_mappings(mut self, model_mappings: super::AccountModelMappings) -> Self {
+        self.model_mappings = model_mappings;
+        self
+    }
+
+    #[must_use]
+    pub const fn model_mappings(&self) -> &super::AccountModelMappings {
+        &self.model_mappings
+    }
+
+    #[must_use]
+    pub fn wire_model<'a>(&'a self, canonical: &'a str) -> Cow<'a, str> {
+        self.model_mappings.resolve(canonical)
     }
 
     #[must_use]
@@ -114,6 +133,10 @@ impl RuntimeAccountDirectory {
     #[must_use]
     pub fn account(&self, account_id: &ProviderAccountId) -> Option<&RuntimeAccount> {
         self.accounts.get(account_id)
+    }
+
+    pub fn accounts(&self) -> impl ExactSizeIterator<Item = (&ProviderAccountId, &RuntimeAccount)> {
+        self.accounts.iter()
     }
 
     #[must_use]
@@ -248,6 +271,7 @@ impl ClientRoutingScope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrozenAccountScope {
     allow_image_generation: bool,
+    model_mappings_enabled: bool,
     fast_mode: FastMode,
     request_profiles: BTreeMap<ProviderKind, super::OpaqueProviderData>,
     directory: Arc<RuntimeAccountDirectory>,
@@ -310,6 +334,7 @@ impl FrozenAccountScope {
         };
         Self {
             allow_image_generation: true,
+            model_mappings_enabled: true,
             fast_mode: FastMode::Default,
             request_profiles: BTreeMap::new(),
             directory,
@@ -392,10 +417,38 @@ impl FrozenAccountScope {
     #[must_use]
     pub fn allows_model(&self, account_id: &ProviderAccountId, upstream_model: &str) -> bool {
         self.allows(account_id)
-            && self
-                .directory
-                .account(account_id)
-                .is_some_and(|account| account.model_access.allows(upstream_model))
+            && self.directory.account(account_id).is_some_and(|account| {
+                account.model_access.allows(if self.model_mappings_enabled {
+                    account
+                        .model_mappings()
+                        .wire_model(upstream_model)
+                        .unwrap_or(upstream_model)
+                } else {
+                    upstream_model
+                })
+            })
+    }
+
+    #[must_use]
+    pub fn wire_model<'a>(
+        &'a self,
+        account_id: &ProviderAccountId,
+        canonical: &'a str,
+    ) -> Option<Cow<'a, str>> {
+        self.directory.account(account_id).map(|account| {
+            if self.model_mappings_enabled {
+                account.wire_model(canonical)
+            } else {
+                Cow::Borrowed(canonical)
+            }
+        })
+    }
+
+    /// 文本映射不能改变图像、搜索与 Provider 原生端点的模型授权和请求事实
+    pub(crate) fn without_model_mappings(&self) -> Self {
+        let mut scope = self.clone();
+        scope.model_mappings_enabled = false;
+        scope
     }
 
     /// 目录按整个授权账号池过滤，不能只看用于获取元数据的账号政策

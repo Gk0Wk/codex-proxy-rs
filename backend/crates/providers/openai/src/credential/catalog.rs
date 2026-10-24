@@ -343,11 +343,22 @@ impl CodexCredentialCatalogService {
             .into_values()
             .flatten()
             .partition(|model| matches!(model.content, ProviderModelContent::Native(_)));
+        let mapped_models = scope
+            .directory()
+            .accounts()
+            .filter(|(account_id, account)| {
+                scope.allows(account_id) && account.provider_kind() == &provider
+            })
+            .flat_map(|(_, account)| account.model_mappings().iter())
+            .map(|(_, wire)| wire.to_owned())
+            .collect::<BTreeSet<_>>();
         let mut seen = BTreeSet::new();
         let api_models = native
             .into_iter()
             .chain(adapted)
-            .filter(|model| seen.insert(model.model.clone()))
+            .filter(|model| {
+                mapped_models.contains(model.model.as_str()) || seen.insert(model.model.clone())
+            })
             .collect::<Vec<_>>();
         accounts.retain(|account| {
             account.authentication_kind() == super::CODEX_AUTHENTICATION_KIND_OAUTH
@@ -365,11 +376,10 @@ impl CodexCredentialCatalogService {
                         .collect::<BTreeSet<_>>();
                     return Ok(models
                         .into_iter()
-                        .chain(
-                            api_models
-                                .into_iter()
-                                .filter(|model| !native_ids.contains(&model.model)),
-                        )
+                        .chain(api_models.into_iter().filter(|model| {
+                            mapped_models.contains(model.model.as_str())
+                                || !native_ids.contains(&model.model)
+                        }))
                         .collect());
                 }
                 Err(error) => last_error = error,
@@ -434,6 +444,7 @@ impl CodexCredentialCatalogService {
                     .fetch_account_models(&client, account, Some(client_version))
                     .await
                     .map(|fetched| {
+                        let source_accounts = BTreeSet::from([account.id().clone()]);
                         fetched
                             .models
                             .into_iter()
@@ -450,6 +461,7 @@ impl CodexCredentialCatalogService {
                                         .with_agent_tools(true, false),
                                     )
                                 },
+                                source_accounts: source_accounts.clone(),
                             })
                             .collect()
                     });

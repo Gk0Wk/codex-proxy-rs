@@ -52,6 +52,21 @@ use super::{
 
 const CONNECTION_TEST_INPUT: &str = "Reply with exactly OK.";
 
+pub(crate) fn validate_account_model_mappings(
+    provider: &ProviderKind,
+    authentication_kind: &str,
+    mappings: Option<&gateway_core::account::AccountModelMappings>,
+) -> Result<(), AdminError> {
+    if mappings.is_some_and(|mappings| !mappings.is_empty())
+        && !(provider.as_str() == "openai" && authentication_kind == "api_key")
+    {
+        return Err(AdminError::invalid(
+            "账号模型映射当前仅支持 OpenAI API Key 账号",
+        ));
+    }
+    Ok(())
+}
+
 /// 统一账号页消费的服务
 #[async_trait]
 pub trait AccountsService: Send + Sync {
@@ -722,6 +737,7 @@ impl AccountsService for DefaultAccountsService {
                         concurrency_limit: None,
                         weight: None,
                         model_access: None,
+                        model_mappings: None,
                         group_ids: None,
                         outbound_proxy: None,
                     },
@@ -749,7 +765,12 @@ impl AccountsService for DefaultAccountsService {
     ) -> Result<AccountUpdateResult, AdminError> {
         let account_id = ProviderAccountId::new(command.account_id.clone())
             .map_err(|_| AdminError::invalid("Provider 账号 ID 不合法"))?;
-        let (_, provider) = self.provider_for_account(&account_id).await?;
+        let (item, provider) = self.provider_for_account(&account_id).await?;
+        validate_account_model_mappings(
+            &item.account.provider_kind,
+            &item.account.authentication_kind,
+            command.model_mappings.as_ref(),
+        )?;
         let enabled = command.enabled;
         let result = self
             .accounts
@@ -809,6 +830,11 @@ impl AccountsService for DefaultAccountsService {
         >::new();
         for account_id in &account_ids {
             let (item, provider) = self.provider_for_account(account_id).await?;
+            validate_account_model_mappings(
+                &item.account.provider_kind,
+                &item.account.authentication_kind,
+                command.model_mappings.as_ref(),
+            )?;
             providers
                 .entry(item.account.provider_kind)
                 .or_insert_with(|| (provider, Vec::new()))

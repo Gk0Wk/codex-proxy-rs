@@ -1044,10 +1044,12 @@ fn prepared_create(
     let NewProviderAccount {
         account,
         model_access,
+        model_mappings,
         credential,
     } = prepared;
     Ok(PreparedCredentialCreate {
         model_access,
+        model_mappings,
         outbound_proxy: account.outbound_proxy().cloned(),
         account_id: account.id().clone(),
         provider_kind: account.provider().clone(),

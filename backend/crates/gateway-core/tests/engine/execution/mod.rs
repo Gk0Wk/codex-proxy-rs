@@ -3304,6 +3304,195 @@ struct FailingProvider;
 
 struct NativeCatalogProvider {
     fail: bool,
+    duplicate_start: bool,
+}
+
+struct CrossAccountCatalogProvider;
+
+#[async_trait]
+impl Provider for CrossAccountCatalogProvider {
+    fn name(&self) -> &'static str {
+        "openai"
+    }
+
+    fn catalog_generation(&self) -> ProviderCatalogGeneration {
+        ProviderCatalogGeneration::default()
+    }
+
+    async fn query_model_capabilities(
+        &self,
+    ) -> Result<Vec<ProviderModelCapabilities>, ProviderError> {
+        Ok(Vec::new())
+    }
+
+    async fn query_client_model_catalog(
+        &self,
+        _: &FrozenAccountScope,
+        _: &str,
+        _: &str,
+    ) -> Result<
+        Option<Vec<gateway_core::routing::ProviderModelDescriptor>>,
+        gateway_core::routing::ProviderCatalogUnavailable,
+    > {
+        Ok(Some(vec![
+            gateway_core::routing::ProviderModelDescriptor {
+                model: UpstreamModelId::new("gpt-start").expect("id"),
+                content: gateway_core::routing::ProviderModelContent::Native(
+                    RawJsonPayload::new(
+                        "codex",
+                        Bytes::from_static(br#"{"slug":"gpt-start","source":"first"}"#),
+                    )
+                    .expect("payload"),
+                ),
+                source_accounts: BTreeSet::from([
+                    ProviderAccountId::new("acct_a").expect("account")
+                ]),
+            },
+            gateway_core::routing::ProviderModelDescriptor {
+                model: UpstreamModelId::new("gpt-start").expect("id"),
+                content: gateway_core::routing::ProviderModelContent::Native(
+                    RawJsonPayload::new(
+                        "codex",
+                        Bytes::from_static(br#"{"slug":"gpt-start","source":"last"}"#),
+                    )
+                    .expect("payload"),
+                ),
+                source_accounts: BTreeSet::from([
+                    ProviderAccountId::new("acct_b").expect("account")
+                ]),
+            },
+            gateway_core::routing::ProviderModelDescriptor {
+                model: UpstreamModelId::new("gpt-start").expect("id"),
+                content: gateway_core::routing::ProviderModelContent::Adapted(
+                    gateway_core::routing::ModelPresentation::default(),
+                ),
+                source_accounts: BTreeSet::from([
+                    ProviderAccountId::new("acct_b").expect("account")
+                ]),
+            },
+        ]))
+    }
+
+    async fn execute(
+        self: Arc<Self>,
+        _: ProviderRequest,
+        _: AttemptContext,
+    ) -> Result<ProviderStream, ProviderError> {
+        panic!("catalog must not use metered execution")
+    }
+}
+
+struct ProviderProfilesOnly;
+
+#[async_trait]
+impl Provider for ProviderProfilesOnly {
+    fn name(&self) -> &'static str {
+        "openai"
+    }
+
+    fn catalog_generation(&self) -> ProviderCatalogGeneration {
+        ProviderCatalogGeneration::default()
+    }
+
+    async fn query_model_capabilities(
+        &self,
+    ) -> Result<Vec<ProviderModelCapabilities>, ProviderError> {
+        Ok(Vec::new())
+    }
+
+    async fn query_client_model_catalog(
+        &self,
+        _: &FrozenAccountScope,
+        _: &str,
+        _: &str,
+    ) -> Result<
+        Option<Vec<gateway_core::routing::ProviderModelDescriptor>>,
+        gateway_core::routing::ProviderCatalogUnavailable,
+    > {
+        Ok(None)
+    }
+
+    async fn execute(
+        self: Arc<Self>,
+        _: ProviderRequest,
+        _: AttemptContext,
+    ) -> Result<ProviderStream, ProviderError> {
+        panic!("catalog must not use metered execution")
+    }
+}
+
+struct CatalogFactsStore(gateway_core::routing::snapshot::SnapshotFacts);
+
+impl gateway_core::routing::snapshot::SnapshotStorePort for CatalogFactsStore {
+    fn load_snapshot_facts(
+        &self,
+    ) -> BoxFuture<
+        '_,
+        Result<
+            gateway_core::routing::snapshot::SnapshotFacts,
+            gateway_core::routing::snapshot::SnapshotStoreError,
+        >,
+    > {
+        Box::pin(async move { Ok(self.0.clone()) })
+    }
+
+    fn current_config_revision(
+        &self,
+    ) -> BoxFuture<'_, Result<ConfigRevision, gateway_core::routing::snapshot::SnapshotStoreError>>
+    {
+        Box::pin(async move { Ok(self.0.config_revision()) })
+    }
+}
+
+struct ProfileCatalog {
+    account_a: ProviderAccountId,
+    account_b: ProviderAccountId,
+}
+
+impl gateway_core::routing::ProviderCatalogPort for ProfileCatalog {
+    fn catalog_generations(&self) -> BTreeMap<ProviderKind, ProviderCatalogGeneration> {
+        BTreeMap::from([(
+            ProviderKind::new("openai").expect("provider"),
+            ProviderCatalogGeneration::new(1),
+        )])
+    }
+
+    fn model_catalog_is_exhaustive(&self, _: &ProviderKind) -> bool {
+        false
+    }
+
+    fn query_model_capabilities(
+        &self,
+        _: &ProviderKind,
+    ) -> BoxFuture<
+        '_,
+        Result<Vec<ProviderModelCapabilities>, gateway_core::routing::ProviderCatalogUnavailable>,
+    > {
+        let account_a = self.account_a.clone();
+        let account_b = self.account_b.clone();
+        Box::pin(async move {
+            Ok(vec![
+                ProviderModelCapabilities::new(
+                    UpstreamModelId::new("wire-a").expect("model"),
+                    ModelCapabilities::new(BTreeSet::from([OperationKind::Generate]), Some(16_000)),
+                )
+                .with_presentation(gateway_core::routing::ModelPresentation::new(
+                    Some("Wire A".into()),
+                    None,
+                ))
+                .with_catalog_accounts(BTreeSet::from([account_a])),
+                ProviderModelCapabilities::new(
+                    UpstreamModelId::new("wire-b").expect("model"),
+                    ModelCapabilities::new(BTreeSet::from([OperationKind::Generate]), Some(16_000)),
+                )
+                .with_presentation(gateway_core::routing::ModelPresentation::new(
+                    Some("Wire B".into()),
+                    None,
+                ))
+                .with_catalog_accounts(BTreeSet::from([account_b])),
+            ])
+        })
+    }
 }
 
 #[async_trait]
@@ -3334,23 +3523,42 @@ impl Provider for NativeCatalogProvider {
         if self.fail {
             return Err(gateway_core::routing::ProviderCatalogUnavailable);
         }
-        Ok(Some(
-            ["gpt-new", "gpt-start"]
-                .into_iter()
-                .map(|id| gateway_core::routing::ProviderModelDescriptor {
-                    model: UpstreamModelId::new(id).expect("id"),
-                    content: gateway_core::routing::ProviderModelContent::Native(
-                        RawJsonPayload::new(
-                            "codex",
-                            serde_json::to_vec(&json!({"slug":id,"future":null}))
-                                .expect("JSON")
-                                .into(),
-                        )
-                        .expect("payload"),
-                    ),
-                })
-                .collect(),
-        ))
+        let mut models = ["gpt-new", "gpt-start"]
+            .into_iter()
+            .map(|id| gateway_core::routing::ProviderModelDescriptor {
+                model: UpstreamModelId::new(id).expect("id"),
+                content: gateway_core::routing::ProviderModelContent::Native(
+                    RawJsonPayload::new(
+                        "codex",
+                        serde_json::to_vec(&json!({"slug":id,"future":null}))
+                            .expect("JSON")
+                            .into(),
+                    )
+                    .expect("payload"),
+                ),
+                source_accounts: BTreeSet::from([
+                    ProviderAccountId::new("acct_start").expect("account")
+                ]),
+            })
+            .collect::<Vec<_>>();
+        if self.duplicate_start {
+            models.push(gateway_core::routing::ProviderModelDescriptor {
+                model: UpstreamModelId::new("gpt-start").expect("id"),
+                content: gateway_core::routing::ProviderModelContent::Native(
+                    RawJsonPayload::new(
+                        "codex",
+                        serde_json::to_vec(&json!({"slug":"gpt-start","source":"last"}))
+                            .expect("JSON")
+                            .into(),
+                    )
+                    .expect("payload"),
+                ),
+                source_accounts: BTreeSet::from([
+                    ProviderAccountId::new("acct_start").expect("account")
+                ]),
+            });
+        }
+        Ok(Some(models))
     }
     async fn execute(
         self: Arc<Self>,
@@ -3400,8 +3608,11 @@ fn client_catalog_forwards_scope_maps_whole_objects_and_omits_unroutable_models(
         let service = DefaultExecutionService::new(
             RuntimeSnapshotHandle::new(snapshot),
             Arc::new(TrackingExecutionStore::default()),
-            ProviderRegistry::new([Arc::new(NativeCatalogProvider { fail }) as Arc<dyn Provider>])
-                .expect("registry"),
+            ProviderRegistry::new([Arc::new(NativeCatalogProvider {
+                fail,
+                duplicate_start: false,
+            }) as Arc<dyn Provider>])
+            .expect("registry"),
             Arc::new(UnusedAdmissions),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
@@ -3437,6 +3648,186 @@ fn client_catalog_forwards_scope_maps_whole_objects_and_omits_unroutable_models(
             "插件别名使用相同原生对象，不伪造字段"
         );
     }
+}
+
+#[test]
+fn client_catalog_keeps_last_duplicate_descriptor_for_identical_source_account() {
+    let snapshot = start_snapshot();
+    let service = DefaultExecutionService::new(
+        RuntimeSnapshotHandle::new(snapshot),
+        Arc::new(TrackingExecutionStore::default()),
+        ProviderRegistry::new([Arc::new(NativeCatalogProvider {
+            fail: false,
+            duplicate_start: true,
+        }) as Arc<dyn Provider>])
+        .expect("registry"),
+        Arc::new(UnusedAdmissions),
+        Arc::new(UnusedContinuation),
+        Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
+    );
+    let client = service.authenticate("sk_start_test").expect("authenticate");
+    let models =
+        block_on(service.client_model_catalog(&client, "codex", "0.154.0")).expect("models");
+    let start = models
+        .iter()
+        .find(|entry| matches!(entry, gateway_core::routing::PublicModelDescriptor::Native { model, .. } if model.as_str() == "gpt-start"))
+        .expect("gpt-start");
+    let gateway_core::routing::PublicModelDescriptor::Native { payload, .. } = start else {
+        panic!("native");
+    };
+    let body: serde_json::Value = serde_json::from_slice(payload.body()).expect("body");
+    assert_eq!(body["source"], "last");
+}
+
+#[test]
+fn client_catalog_keeps_last_duplicate_descriptor_across_accounts_without_mappings() {
+    let provider = ProviderKind::new("openai").expect("provider");
+    let directory = Arc::new(RuntimeAccountDirectory::new(BTreeMap::from([
+        (
+            ProviderAccountId::new("acct_a").expect("account"),
+            RuntimeAccount::new(provider.clone(), BTreeSet::new()),
+        ),
+        (
+            ProviderAccountId::new("acct_b").expect("account"),
+            RuntimeAccount::new(provider.clone(), BTreeSet::new()),
+        ),
+    ])));
+    let scope = Arc::new(FrozenAccountScope::new(
+        Arc::clone(&directory),
+        ClientRoutingScope::all_accounts(),
+    ));
+    let snapshot = RuntimeSnapshot::new(
+        ConfigRevision::new(1).expect("revision"),
+        gateway_core::settings::SettingsValues::new(1, "smart", BTreeMap::new(), None, None),
+        vec![provider.clone()],
+        vec![ProviderModel::new(
+            provider,
+            UpstreamModelId::new("gpt-start").expect("model"),
+            ModelCapabilities::new(BTreeSet::from([OperationKind::Generate]), Some(16_000)),
+        )],
+        vec![ClientPolicy::new(
+            ClientApiKeyId::new("key_start_test").expect("key"),
+            PlaintextClientApiKey::new("sk_start_test").expect("plaintext"),
+            scope,
+            true,
+            RateLimits::unlimited(),
+        )],
+    )
+    .expect("snapshot")
+    .with_account_directory(directory);
+    let service = DefaultExecutionService::new(
+        RuntimeSnapshotHandle::new(snapshot),
+        Arc::new(TrackingExecutionStore::default()),
+        ProviderRegistry::new([Arc::new(CrossAccountCatalogProvider) as Arc<dyn Provider>])
+            .expect("registry"),
+        Arc::new(UnusedAdmissions),
+        Arc::new(UnusedContinuation),
+        Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
+    );
+    let client = service.authenticate("sk_start_test").expect("authenticate");
+    let models =
+        block_on(service.client_model_catalog(&client, "codex", "0.154.0")).expect("models");
+    let start = models
+        .iter()
+        .find(|entry| matches!(entry, gateway_core::routing::PublicModelDescriptor::Native { model, .. } if model.as_str() == "gpt-start"))
+        .expect("gpt-start");
+    let gateway_core::routing::PublicModelDescriptor::Native { payload, .. } = start else {
+        panic!("native");
+    };
+    let body: serde_json::Value = serde_json::from_slice(payload.body()).expect("body");
+    assert_eq!(body["source"], "last");
+}
+
+#[test]
+fn client_catalog_profile_fallback_uses_only_the_scoped_account_wire() {
+    use gateway_core::account::{
+        AccountModelAccess, AccountModelAccessMode, AccountModelMappings, ProviderAccountId,
+    };
+    use gateway_core::routing::snapshot::{
+        RuntimeSnapshotCompiler, SnapshotAccountGroupFacts, SnapshotAccountGroupMemberFacts,
+        SnapshotClientPolicyFacts, SnapshotFacts, SnapshotProviderAccountFacts,
+    };
+
+    let account_a = ProviderAccountId::new("acct_profile_a").expect("account");
+    let account_b = ProviderAccountId::new("acct_profile_b").expect("account");
+    let group = AccountGroupId::new("grp_00000000000000000000000000000031").expect("group");
+    let access = |wire: &str| {
+        AccountModelAccess::new(AccountModelAccessMode::Allowlist, vec![wire.to_owned()])
+            .expect("access")
+    };
+    let mappings = |wire: &str| {
+        AccountModelMappings::new(BTreeMap::from([(
+            "canonical-model".to_owned(),
+            wire.to_owned(),
+        )]))
+        .expect("mappings")
+    };
+    let facts = SnapshotFacts::new(
+        ConfigRevision::new(1).expect("revision"),
+        ConfigRevision::new(1).expect("revision"),
+        gateway_core::settings::SettingsValues::new(1, "smart", BTreeMap::new(), None, None),
+        vec![SnapshotClientPolicyFacts::new(
+            ClientApiKeyId::new("key_profile").expect("key"),
+            PlaintextClientApiKey::new("sk_profile").expect("plaintext"),
+            vec![group.clone()],
+            RateLimits::unlimited(),
+        )],
+        vec![SnapshotAccountGroupFacts::new(
+            group.clone(),
+            "Profile B".to_owned(),
+            true,
+        )],
+        vec![
+            SnapshotProviderAccountFacts::new(account_a.clone(), "openai")
+                .with_model_access(access("wire-a"))
+                .with_model_mappings(mappings("wire-a")),
+            SnapshotProviderAccountFacts::new(account_b.clone(), "openai")
+                .with_model_access(access("wire-b"))
+                .with_model_mappings(mappings("wire-b")),
+        ],
+        vec![SnapshotAccountGroupMemberFacts::new(
+            group,
+            account_b.clone(),
+        )],
+    );
+    let snapshot = block_on(
+        RuntimeSnapshotCompiler::new(
+            Arc::new(CatalogFactsStore(facts)),
+            Arc::new(ProfileCatalog {
+                account_a,
+                account_b,
+            }),
+        )
+        .compile(),
+    )
+    .expect("snapshot");
+    let service = DefaultExecutionService::new(
+        RuntimeSnapshotHandle::new(snapshot),
+        Arc::new(TrackingExecutionStore::default()),
+        ProviderRegistry::new([Arc::new(ProviderProfilesOnly) as Arc<dyn Provider>])
+            .expect("registry"),
+        Arc::new(UnusedAdmissions),
+        Arc::new(UnusedContinuation),
+        Arc::new(RecordingClientApiKeyUsage::default()),
+        Arc::new(crate::RecordingDiagnostics::default()),
+    );
+    let client = service.authenticate("sk_profile").expect("authenticate");
+    let models =
+        block_on(service.client_model_catalog(&client, "openai", "1.0.0")).expect("profiles");
+    let profile = models
+        .iter()
+        .find_map(|entry| match entry {
+            gateway_core::routing::PublicModelDescriptor::Adapted(profile)
+                if profile.model().as_str() == "canonical-model" =>
+            {
+                Some(profile)
+            }
+            _ => None,
+        })
+        .expect("canonical profile");
+    assert_eq!(profile.presentation().display_name(), Some("Wire B"));
 }
 
 #[async_trait]

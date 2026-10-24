@@ -570,6 +570,7 @@ impl CodexOAuthAdminService {
             CompletedCodexOAuthCredential::Create(Box::new(
                 gateway_core::account::NewProviderAccount {
                     model_access: Default::default(),
+                    model_mappings: Default::default(),
                     account: prepared
                         .account
                         .with_outbound_proxy(mutation.outbound_proxy().cloned()),

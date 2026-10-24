@@ -794,6 +794,7 @@ pub struct ProviderAccount {
     concurrency_limit: Option<AccountConcurrencyLimit>,
     weight: AccountWeight,
     model_access: super::AccountModelAccess,
+    model_mappings: super::AccountModelMappings,
     credential_state: CredentialState,
     quota: QuotaState,
     last_error_reason: Option<AccountErrorReason>,
@@ -832,6 +833,7 @@ impl ProviderAccount {
             concurrency_limit: None,
             weight: AccountWeight::DEFAULT,
             model_access: super::AccountModelAccess::all(),
+            model_mappings: super::AccountModelMappings::empty(),
             credential_state: CredentialState::Unknown,
             quota: QuotaState::unknown(),
             last_error_reason: None,
@@ -877,6 +879,17 @@ impl ProviderAccount {
     #[must_use]
     pub const fn model_access(&self) -> &super::AccountModelAccess {
         &self.model_access
+    }
+
+    #[must_use]
+    pub fn with_model_mappings(mut self, model_mappings: super::AccountModelMappings) -> Self {
+        self.model_mappings = model_mappings;
+        self
+    }
+
+    #[must_use]
+    pub const fn model_mappings(&self) -> &super::AccountModelMappings {
+        &self.model_mappings
     }
 
     #[must_use]
@@ -1170,6 +1183,8 @@ pub struct NewProviderAccount {
     pub account: ProviderAccount,
     /// 导入时显式提供的政策；省略时保留已有账号设置
     pub model_access: Option<super::AccountModelAccess>,
+    /// 导入时显式提供的账号模型映射；省略时保留已有账号设置
+    pub model_mappings: Option<super::AccountModelMappings>,
     pub credential: PlaintextCredential,
 }
 

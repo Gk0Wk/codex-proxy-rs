@@ -238,6 +238,26 @@ pub(super) async fn commit_authorization(
     context: &MutationContext,
     resource: &'static str,
 ) -> Result<crate::model::provider_credentials::AuthorizationCommitResult, AdminError> {
+    if let PreparedAuthorizationCredential::Create(credential) = &prepared.credential {
+        let validation = super::accounts::validate_account_model_mappings(
+            &credential.provider_kind,
+            &credential.authentication_kind,
+            settings
+                .as_ref()
+                .and_then(|settings| settings.model_mappings.as_ref()),
+        )
+        .and_then(|()| {
+            super::accounts::validate_account_model_mappings(
+                &credential.provider_kind,
+                &credential.authentication_kind,
+                credential.model_mappings.as_ref(),
+            )
+        });
+        if let Err(error) = validation {
+            prepared.abort().await?;
+            return Err(error);
+        }
+    }
     if settings.is_some()
         && matches!(
             &prepared.credential,

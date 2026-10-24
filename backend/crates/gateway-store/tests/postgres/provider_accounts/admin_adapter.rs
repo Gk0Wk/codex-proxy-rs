@@ -257,6 +257,7 @@ pub(super) fn credential(id: &str, user: &str) -> PreparedCredentialCreate {
         credential_observed_at: Utc::now(),
         outbound_proxy: None,
         model_access: None,
+        model_mappings: Default::default(),
     }
 }
 

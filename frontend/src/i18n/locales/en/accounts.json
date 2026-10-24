@@ -205,6 +205,14 @@
       "invalidModelId": "Enter an exact model ID, wildcards are not supported",
       "enterValidExactModelIdUpTo": "Please enter a valid exact model ID, up to 256 bytes, no wildcards are supported"
     },
+    "modelMappings": {
+      "title": "Account model mappings",
+      "description": "OpenAI API Key accounts only. After global or plugin alias resolution, this account applies one exact replacement.",
+      "add": "Add mapping",
+      "incomplete": "Complete both sides of every account model mapping",
+      "duplicate": "Logical model {model} is duplicated",
+      "invalidId": "Model IDs must be trimmed, non-empty, at most 256 bytes, and contain no control characters or __ prefix"
+    },
     "notes": {
       "viewAccountNotes": "View account notes",
       "title": "Account notes"

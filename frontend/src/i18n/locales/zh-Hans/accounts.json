@@ -205,6 +205,14 @@
       "invalidModelId": "请使用有效的精确模型 ID，不支持通配符",
       "enterValidExactModelIdUpTo": "请输入有效的精确模型 ID，最多 256 字节，不支持通配符"
     },
+    "modelMappings": {
+      "title": "账号模型映射",
+      "description": "仅对 OpenAI API Key 生效；在全局或插件别名解析后，再由当前账号做一次精确替换。",
+      "add": "添加映射",
+      "incomplete": "请完整填写账号模型映射",
+      "duplicate": "逻辑模型 {model} 重复",
+      "invalidId": "模型 ID 须去除首尾空白、非空、最多 256 字节、不得包含控制字符或以 __ 开头"
+    },
     "notes": {
       "viewAccountNotes": "查看账号备注",
       "title": "账号备注"

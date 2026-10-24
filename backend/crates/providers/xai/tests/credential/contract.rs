@@ -288,6 +288,7 @@ async fn repository_rejects_account_owned_by_another_provider() {
     store
         .create_account(NewProviderAccount {
             model_access: Default::default(),
+            model_mappings: Default::default(),
             account,
             credential: PlaintextCredential::new(object),
         })

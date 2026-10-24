@@ -1019,6 +1019,8 @@ async fn api_key_native_catalog_preserves_unknown_reasoning_and_background_entit
 
 #[tokio::test]
 async fn api_key_client_catalog_keeps_native_sources_stable_and_account_scoped() {
+    use std::collections::BTreeSet;
+
     use gateway_core::routing::ProviderModelContent;
     use provider_openai::credential::ResponsesTransport;
     use serde_json::json;
@@ -1060,9 +1062,9 @@ async fn api_key_client_catalog_keeps_native_sources_stable_and_account_scoped()
             .await;
     }
     let service = service_with_catalog_cache(&store, upstream.uri(), catalog_cache());
-    for (scope_accounts, expected) in [
-        (&accounts[..], "First native"),
-        (&accounts[2..], "Second native"),
+    for (scope_accounts, expected, winner) in [
+        (&accounts[..], "First native", 1),
+        (&accounts[2..], "Second native", 0),
     ] {
         let models = service
             .client_model_catalog(&client_scope(scope_accounts), "0.155.0")
@@ -1074,8 +1076,178 @@ async fn api_key_client_catalog_keeps_native_sources_stable_and_account_scoped()
         };
         let document: serde_json::Value = serde_json::from_slice(payload.body()).unwrap();
         assert_eq!(document["display_name"], expected);
+        let expected_sources = BTreeSet::from([scope_accounts[winner].id().clone()]);
+        assert_eq!(models[0].source_accounts, expected_sources);
     }
     upstream.verify().await;
+}
+
+#[tokio::test]
+async fn api_key_client_catalog_preserves_distinct_native_payload_sources_for_mapping() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use gateway_core::account::AccountModelMappings;
+    use gateway_core::routing::ProviderModelContent;
+    use provider_openai::credential::ResponsesTransport;
+    use serde_json::json;
+
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    for (server, display_name) in [(&first, "Account A"), (&second, "Account B")] {
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .and(query_param("client_version", "0.155.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "models":[{"slug":"shared", "display_name":display_name}]
+            })))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+    let store = Arc::new(MemoryAccountStore::default());
+    store
+        .seed_api_key("acct_a", first.uri(), ResponsesTransport::Http)
+        .await;
+    store
+        .seed_api_key("acct_b", second.uri(), ResponsesTransport::Http)
+        .await;
+    let account_a = store.account("acct_a").unwrap();
+    let account_b = store.account("acct_b").unwrap();
+    let scope = FrozenAccountScope::new(
+        Arc::new(RuntimeAccountDirectory::new(BTreeMap::from([
+            (
+                account_a.id().clone(),
+                RuntimeAccount::new(ProviderKind::new("openai").unwrap(), BTreeSet::new()),
+            ),
+            (
+                account_b.id().clone(),
+                RuntimeAccount::new(ProviderKind::new("openai").unwrap(), BTreeSet::new())
+                    .with_model_mappings(
+                        AccountModelMappings::new(BTreeMap::from([(
+                            "mapped-model".to_owned(),
+                            "shared".to_owned(),
+                        )]))
+                        .unwrap(),
+                    ),
+            ),
+        ]))),
+        ClientRoutingScope::all_accounts(),
+    );
+    let service = service_with_catalog_cache(&store, first.uri(), catalog_cache());
+    let models = service
+        .client_model_catalog(&scope, "0.155.0")
+        .await
+        .unwrap();
+    assert_eq!(models.len(), 2);
+    let payloads = models
+        .iter()
+        .map(|model| {
+            assert_eq!(model.source_accounts.len(), 1);
+            let ProviderModelContent::Native(payload) = &model.content else {
+                panic!("native model expected")
+            };
+            (
+                model.source_accounts.iter().next().unwrap().as_str().to_owned(),
+                serde_json::from_slice::<serde_json::Value>(payload.body()).unwrap()["display_name"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        payloads,
+        [
+            ("acct_a".to_owned(), "Account A".to_owned()),
+            ("acct_b".to_owned(), "Account B".to_owned()),
+        ]
+    );
+    first.verify().await;
+    second.verify().await;
+}
+
+#[tokio::test]
+async fn mapped_api_model_is_not_hidden_by_an_oauth_model_with_the_same_wire() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use gateway_core::account::AccountModelMappings;
+    use gateway_core::routing::ProviderModelContent;
+    use provider_openai::credential::ResponsesTransport;
+    use serde_json::json;
+
+    let oauth = MockServer::start().await;
+    let api = MockServer::start().await;
+    for (server, catalog_path, display_name) in [
+        (&oauth, "/codex/models", "OAuth model"),
+        (&api, "/models", "API model"),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(catalog_path))
+            .and(query_param("client_version", "0.155.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "models":[{"slug":"shared", "display_name":display_name}]
+            })))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+    let store = Arc::new(MemoryAccountStore::default());
+    let oauth_account = seed_account(&store, "acct_oauth_mapped").await;
+    store
+        .seed_api_key("acct_api_mapped", api.uri(), ResponsesTransport::Http)
+        .await;
+    let api_account = store.account("acct_api_mapped").unwrap();
+    let scope = FrozenAccountScope::new(
+        Arc::new(RuntimeAccountDirectory::new(BTreeMap::from([
+            (
+                oauth_account.id().clone(),
+                RuntimeAccount::new(ProviderKind::new("openai").unwrap(), BTreeSet::new()),
+            ),
+            (
+                api_account.id().clone(),
+                RuntimeAccount::new(ProviderKind::new("openai").unwrap(), BTreeSet::new())
+                    .with_model_mappings(
+                        AccountModelMappings::new(BTreeMap::from([(
+                            "mapped-model".to_owned(),
+                            "shared".to_owned(),
+                        )]))
+                        .unwrap(),
+                    ),
+            ),
+        ]))),
+        ClientRoutingScope::all_accounts(),
+    );
+    let service = service_with_catalog_cache(&store, oauth.uri(), catalog_cache());
+    let models = service
+        .client_model_catalog(&scope, "0.155.0")
+        .await
+        .unwrap();
+    assert_eq!(models.len(), 2);
+    let payloads = models
+        .iter()
+        .map(|model| {
+            assert_eq!(model.source_accounts.len(), 1);
+            let ProviderModelContent::Native(payload) = &model.content else {
+                panic!("native model expected")
+            };
+            (
+                model.source_accounts.iter().next().unwrap().as_str().to_owned(),
+                serde_json::from_slice::<serde_json::Value>(payload.body()).unwrap()["display_name"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        payloads,
+        [
+            ("acct_oauth_mapped".to_owned(), "OAuth model".to_owned()),
+            ("acct_api_mapped".to_owned(), "API model".to_owned()),
+        ]
+    );
+    oauth.verify().await;
+    api.verify().await;
 }
 
 #[tokio::test]

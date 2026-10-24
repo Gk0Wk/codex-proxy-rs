@@ -200,6 +200,7 @@ fn prepare_create(
     validate_facts(&facts)?;
     Ok(PreparedCredentialCreate {
         model_access: None,
+        model_mappings: None,
         outbound_proxy: None,
         account_id: ProviderAccountId::new(format!("acct_{}", uuid::Uuid::now_v7().simple()))
             .map_err(|_| invalid())?,

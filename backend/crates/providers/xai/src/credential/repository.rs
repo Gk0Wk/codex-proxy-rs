@@ -177,6 +177,7 @@ impl GrokCredentialAdmin {
         .with_refresh_schedule(true, None);
         Ok(NewProviderAccount {
             model_access: Default::default(),
+            model_mappings: Default::default(),
             account,
             credential: encode_secret(&input.secret, &input.account)?,
         })

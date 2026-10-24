@@ -680,18 +680,27 @@ impl Provider for CodexProvider {
         };
         let account_selection_wait_ms =
             u64::try_from(selection_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let selected_upstream_model = candidate
+            .account_upstream_model(lease.account_id())
+            .cloned()
+            .ok_or_else(|| {
+                provider_error(
+                    ProviderErrorKind::NoEligibleAccount,
+                    UpstreamSendState::NotSent,
+                )
+            })?;
         let provider_kind = ProviderKind::new(PROVIDER_NAME)
             .map_err(|_| provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent))?;
         let account_id = lease.account_id().clone();
         let frozen_requirements = Operation::Generate(generate.clone()).capability_requirements();
         let provider = Arc::clone(&self);
         let terminal_context = context.clone();
-        let terminal_model = upstream_model.clone();
+        let terminal_model = selected_upstream_model.clone();
         context
             .execute_middleware(
                 Operation::Generate(generate.clone()),
                 provider_kind,
-                Some(upstream_model.as_str().to_owned()),
+                Some(selected_upstream_model.as_str().to_owned()),
                 account_id,
                 Box::new(move |operation, middleware_headers| {
                     Box::pin(async move {

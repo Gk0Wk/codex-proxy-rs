@@ -75,6 +75,21 @@ impl ProviderCredentials {
             &prepared,
             "provider credential import",
         )?;
+        for credential in &prepared.credentials {
+            super::super::accounts::validate_account_model_mappings(
+                &credential.provider_kind,
+                &credential.authentication_kind,
+                command
+                    .settings
+                    .as_ref()
+                    .and_then(|settings| settings.model_mappings.as_ref()),
+            )?;
+            super::super::accounts::validate_account_model_mappings(
+                &credential.provider_kind,
+                &credential.authentication_kind,
+                credential.model_mappings.as_ref(),
+            )?;
+        }
         let result = self
             .accounts
             .commit_credential_import(
@@ -151,6 +166,14 @@ impl ProviderCredentials {
             .await
             .map_err(|error| map_provider_error(error, "provider credential rotation"))?;
         validate_prepared_rotation(&account, &prepared, "provider credential rotation")?;
+        super::super::accounts::validate_account_model_mappings(
+            &account.provider_kind,
+            &account.authentication_kind,
+            command
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.model_mappings.as_ref()),
+        )?;
         let result = commit_credential_rotation(
             self.accounts.as_ref(),
             prepared,
