@@ -161,6 +161,7 @@ impl PluginRuntime {
                             set.model_aliases
                                 .iter()
                                 .any(|alias| alias.owner == instance.id)
+                                || set.models.iter().any(|model| model.owner == instance.id)
                         });
                     if has_retained_catalog {
                         return Err(AdminError::unavailable(
@@ -195,7 +196,9 @@ impl PluginRuntime {
             upstream_entries,
             authentication_entries,
             model_aliases,
+            models,
         } = contributions;
+        crate::adapter::catalog::validate_models(&model_aliases, &models)?;
         let id = ExtensionSetId::new(uuid::Uuid::new_v4().to_string())
             .map_err(|_| AdminError::internal("插件集合 ID 无效"))?;
         let observers = crate::adapter::observer::PluginObserverPlan::compile(
@@ -260,6 +263,7 @@ impl PluginRuntime {
             management,
             failures,
             model_aliases,
+            models,
             shutting_down: self.shutting_down.clone(),
         });
         self.prepared

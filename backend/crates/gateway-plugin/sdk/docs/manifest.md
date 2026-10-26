@@ -57,7 +57,8 @@ RPC v7 的帧布局、编码与会话生命周期见[通信边界](../README.md#
 | `scheduler` | `3` |
 | `upstream_adapter` | `5` |
 | `frontend_authentication`、`model_router`、`retry_policy`、`observer`、`management` | `2` |
-| `model_catalog`、`command_line`、`maintenance` | `1` |
+| `model_catalog` | `1`、`2` |
+| `command_line`、`maintenance` | `1` |
 
 例如，仅声明管理页面、命令行和模型请求中间件：
 
