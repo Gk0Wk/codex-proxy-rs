@@ -162,7 +162,10 @@
       "disableDescription": "以下配置将停止处理新请求，设置、密钥与私有数据保留",
       "willBeDeactivated": "将停用",
       "confirmSwitch": "确认切换",
-      "confirmEnable": "确认启用"
+      "confirmEnable": "确认启用",
+      "incompatibleRisk": "启动不兼容版本可能导致系统不稳定，是否继续？",
+      "confirmationScope": "确认仅对本次启动有效，下次宿主启动时会重新检查",
+      "continueStartup": "继续启动"
     },
     "extensions": {
       "emptyTitle": "暂无插件管理页面",
@@ -419,14 +422,15 @@
       "runFailed": "运行失败",
       "compatibilityReminder": "兼容性提醒",
       "deprecatedApi": "接口待升级，当前仍兼容",
-      "startupUnverified": "可以尝试启动，运行结果仍需验证",
+      "startupUnverified": "默认不自动启动，可在插件页确认风险后尝试启动",
       "compatibilityWindow": "旧接口还将兼容至少 {remainingReleases} 个正式版本",
       "compatibilityEnding": "兼容窗口已满，后续正式版本将移除旧接口转换",
       "unsupportedVersionHelp": "配置与数据保留，请安装可加载的插件版本",
       "restartHelp": "启用配置保留，可在插件详情中重新启动",
       "upgradeHelp": "请更新插件，或联系作者升级接口",
       "unknown": "运行状态未知",
-      "unknownDescription": "暂时无法读取运行状态，启用配置保持不变"
+      "unknownDescription": "暂时无法读取运行状态，启用配置保持不变",
+      "incompatibleNotStarted": "未启动：版本不兼容"
     },
     "updates": {
       "packageRequired": "请选择插件包以确认版本与兼容性",

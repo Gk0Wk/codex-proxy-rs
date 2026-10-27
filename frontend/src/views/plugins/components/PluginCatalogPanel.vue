@@ -58,6 +58,9 @@ const rows = computed(() => filtered.value
     const version = plugin.artifacts.find(artifact => artifact.metadata.sha256 === current?.artifactSha256)?.metadata.version ?? plugin.artifact.metadata.version
     return {
       ...plugin,
+      failureReason: plugin.configurations.filter(instance => instance.enabled).length > 1
+        ? t('plugins.configuration.legacy.multipleEnabledNotice')
+        : undefined,
       versionLabel: version,
       versionTitle: `${current
         ? t('plugins.catalog.currentVersion')
@@ -139,8 +142,8 @@ const columns = computed(() => (defineTableColumns<(typeof rows.value)[number]>(
                 </div>
                 <span class="truncate text-cp-xs text-cp-text-secondary">{{ plugin.artifact.metadata.publisher }}</span>
               </div>
-              <PluginStatusNotice v-if="currentPluginInstance(plugin)" :instance="currentPluginInstance(plugin)!" />
-              <ZTag :type="pluginStatusType(pluginStatus(plugin))" size="small">
+              <PluginStatusNotice v-if="currentPluginInstance(plugin)" :instance="currentPluginInstance(plugin)!" :failure-reason="plugin.failureReason" />
+              <ZTag v-if="!['failed', 'incompatible'].includes(pluginStatus(plugin))" :type="pluginStatusType(pluginStatus(plugin))" size="small">
                 {{ PLUGIN_STATUS_LABELS[pluginStatus(plugin)] }}
               </ZTag>
             </div>
@@ -175,8 +178,8 @@ const columns = computed(() => (defineTableColumns<(typeof rows.value)[number]>(
       </template>
       <template #status="{ row }">
         <div class="flex items-center gap-1.5">
-          <PluginStatusNotice v-if="currentPluginInstance(row)" :instance="currentPluginInstance(row)!" />
-          <ZTag :type="pluginStatusType(pluginStatus(row))">
+          <PluginStatusNotice v-if="currentPluginInstance(row)" :instance="currentPluginInstance(row)!" :failure-reason="row.failureReason" />
+          <ZTag v-if="!['failed', 'incompatible'].includes(pluginStatus(row))" :type="pluginStatusType(pluginStatus(row))">
             {{ PLUGIN_STATUS_LABELS[pluginStatus(row)] }}
           </ZTag>
         </div>

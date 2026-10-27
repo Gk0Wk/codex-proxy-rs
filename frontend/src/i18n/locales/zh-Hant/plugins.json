@@ -162,7 +162,10 @@
       "disableDescription": "以下配置將停止處理新請求，設置、密鑰與私有數據保留",
       "willBeDeactivated": "將停用",
       "confirmSwitch": "確認切換",
-      "confirmEnable": "確認啓用"
+      "confirmEnable": "確認啓用",
+      "incompatibleRisk": "啟動不相容版本可能導致系統不穩定，是否繼續？",
+      "confirmationScope": "確認僅對本次啟動有效，下次宿主啟動時會重新檢查",
+      "continueStartup": "繼續啟動"
     },
     "extensions": {
       "emptyTitle": "暫無插件管理頁面",
@@ -419,14 +422,15 @@
       "runFailed": "運行失敗",
       "compatibilityReminder": "兼容性提醒",
       "deprecatedApi": "接口待升級，當前仍兼容",
-      "startupUnverified": "可以嘗試啓動，運行結果仍需驗證",
+      "startupUnverified": "預設不自動啟動，可在插件頁確認風險後嘗試啟動",
       "compatibilityWindow": "舊接口還將兼容至少 {remainingReleases} 個正式版本",
       "compatibilityEnding": "兼容窗口已滿，後續正式版本將移除舊接口轉換",
       "unsupportedVersionHelp": "配置與數據保留，請安裝可加載的插件版本",
       "restartHelp": "啓用配置保留，可在插件詳情中重新啓動",
       "upgradeHelp": "請更新插件，或聯繫作者升級接口",
       "unknown": "運行狀態未知",
-      "unknownDescription": "暫時無法讀取運行狀態，啟用配置保持不變"
+      "unknownDescription": "暫時無法讀取運行狀態，啟用配置保持不變",
+      "incompatibleNotStarted": "未啟動：版本不相容"
     },
     "updates": {
       "packageRequired": "請選擇插件包以確認版本與兼容性",

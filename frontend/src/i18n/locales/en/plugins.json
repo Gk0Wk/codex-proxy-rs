@@ -162,7 +162,10 @@
       "disableDescription": "These configurations will stop receiving new requests, settings, secrets, and private data are kept",
       "willBeDeactivated": "Will be deactivated",
       "confirmSwitch": "Confirm switch",
-      "confirmEnable": "Confirm enable"
+      "confirmEnable": "Confirm enable",
+      "incompatibleRisk": "Starting an incompatible version may make the system unstable — continue?",
+      "confirmationScope": "This confirmation applies only to this start, compatibility is checked again when the host starts",
+      "continueStartup": "Start anyway"
     },
     "extensions": {
       "emptyTitle": "No plugin management pages",
@@ -419,14 +422,15 @@
       "runFailed": "Run failed",
       "compatibilityReminder": "Compatibility reminder",
       "deprecatedApi": "API upgrade needed, currently compatible",
-      "startupUnverified": "Startup can be attempted, runtime behavior still needs verification",
+      "startupUnverified": "Automatic startup is blocked, confirm the risk to try starting it from the plugins page",
       "compatibilityWindow": "The old API remains supported for at least {remainingReleases} stable releases",
       "compatibilityEnding": "The compatibility window has ended, a future stable release will remove the old API adapter",
       "unsupportedVersionHelp": "Configuration and data are kept, install a supported plugin version",
       "restartHelp": "The enabled configuration is kept, restart it in plugin details",
       "upgradeHelp": "Update the plugin or ask its author to upgrade the API",
       "unknown": "Runtime status unknown",
-      "unknownDescription": "Runtime status is unavailable, the enabled configuration is unchanged"
+      "unknownDescription": "Runtime status is unavailable, the enabled configuration is unchanged",
+      "incompatibleNotStarted": "Not started: incompatible version"
     },
     "updates": {
       "packageRequired": "Select a plugin package to confirm its version and compatibility",

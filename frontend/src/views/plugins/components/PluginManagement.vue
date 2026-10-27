@@ -169,6 +169,7 @@ const tabOptions = computed(() => ([
     <PluginEnableModal
       v-model="management.showEnableConfirmation.value"
       :request="management.pendingEnable.value?.request"
+      :compatibility-warning="management.pendingEnable.value?.compatibilityWarning"
       :metadata="management.pendingEnable.value?.artifact.metadata"
       :replacements="management.pendingEnable.value?.replacements ?? []"
       :saving="management.savingInstance.value"
