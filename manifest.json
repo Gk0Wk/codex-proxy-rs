@@ -29,6 +29,27 @@
       "path": "after-mobile.png",
       "bytes": 46957,
       "sha256": "a40962f98027fd72d453e82e7fb4cc61f79290c66bfd0b7c24fd29720a306e0e"
+    },
+    {
+      "path": "before-focus.png",
+      "bytes": 50127,
+      "sha256": "ef94a954d23126625ca7f0c52ed35b1d1c87d63d8428789863b57a18e14d3a63",
+      "viewport": {
+        "width": 720,
+        "height": 900
+      },
+      "capture": "Actual browser render at 720x900; no image editing or DOM style changes"
+    },
+    {
+      "path": "after-focus.png",
+      "bytes": 56575,
+      "sha256": "7cbb21040394a603fd222e277856444e0063dba6dd397bf5460ef3f242214b71",
+      "viewport": {
+        "width": 720,
+        "height": 900
+      },
+      "capture": "Actual browser render at 720x900; no image editing or DOM style changes"
     }
-  ]
+  ],
+  "focusComparison": "Same synthetic data and 720x900 light viewport; before lacks the catalog description below the model limit label, after shows provider observation time and endpoint capability caveat"
 }
