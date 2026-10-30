@@ -189,7 +189,7 @@
       "modelLimitations": "模型限制",
       "refreshModel": "刷新模型",
       "modelRestrictionMode": "模型限制模式",
-      "catalogDescription": "上游目錄更新時間：{observedAt}，僅表示返回了模型 ID，端點能力請透過實際請求或連接測試確認",
+      "catalogDescription": "上游目錄更新時間：{observedAt}，僅表示返回了模型 ID，端點能力請通過實際請求或連接測試確認",
       "searchOrAddModels": "搜索或添加模型",
       "searchOrEnterIdAndPressEnter": "搜索或輸入 ID，回車添加",
       "selectModel": "選擇模型",
