@@ -228,6 +228,7 @@
     },
     "scheduling": {
       "scheduling": "调度",
+      "preserve": "保留",
       "switchAccountSchedule": "切换账号调度",
       "concurrencyLimit": "并发限制",
       "accountConcurrencyLimit": "账号并发限制",

@@ -227,6 +227,7 @@
       "outboundTunnel": "出站隧道"
     },
     "scheduling": {
+      "preserve": "保留",
       "scheduling": "調度",
       "switchAccountSchedule": "切換賬號調度",
       "concurrencyLimit": "併發限制",

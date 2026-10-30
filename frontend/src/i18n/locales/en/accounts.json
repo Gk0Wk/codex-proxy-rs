@@ -227,6 +227,7 @@
       "outboundTunnel": "Outbound tunnel"
     },
     "scheduling": {
+      "preserve": "Keep unchanged",
       "scheduling": "Scheduling",
       "switchAccountSchedule": "Switch account schedule",
       "concurrencyLimit": "Concurrency limit",
