@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "purpose": "PR #560 UI review evidence",
+  "sourceCommit": "054681aff3f5f2c3d8520332c7a049673943aea9",
+  "baseCommit": "aa0ce52034f1cf5b6ce2db4ddbff6d28f799c60e",
+  "environment": "Local Vite preview using actual AccountEditModal and synthetic API fixtures",
+  "screenshots": [
+    {
+      "path": "before-light.png",
+      "bytes": 69538,
+      "sha256": "a8c535bafd2e68149eaa1567b2a8f5d667022c6836055eef33aaf7f806e50901"
+    },
+    {
+      "path": "after-light.png",
+      "bytes": 76025,
+      "sha256": "a3e3274f31ba563da518f803b351b93d7d4958c350acccdb59fc3226300003fa"
+    },
+    {
+      "path": "after-dark.png",
+      "bytes": 74569,
+      "sha256": "dcf2d6f02744f1ac1881cf16117f0704c8c81a5685b42e234ea35fb4c1cb2e5e"
+    },
+    {
+      "path": "after-en.png",
+      "bytes": 89988,
+      "sha256": "76d1730c1f8ce9917d1f2a47e2eac336cc9e2c65ee9a879b0f186e97fdecc561"
+    },
+    {
+      "path": "after-mobile.png",
+      "bytes": 46957,
+      "sha256": "a40962f98027fd72d453e82e7fb4cc61f79290c66bfd0b7c24fd29720a306e0e"
+    }
+  ]
+}
