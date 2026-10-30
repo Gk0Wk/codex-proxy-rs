@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "base_commit": "fdd124e72f9d690a72a130ac89127b5a8f5ecacb",
+  "source_commit": "f8074e47f99184f3197f98edc80582bd1c9dd6df",
+  "fixture": "two synthetic accounts; loopback-only API",
+  "files": [
+    {
+      "path": "before-light.png",
+      "bytes": 71326,
+      "sha256": "c772bffcb2dea4ad7acf9cd661e1ee9cd53620b2d25c79809d59b92016902fa3"
+    },
+    {
+      "path": "after-light.png",
+      "bytes": 70369,
+      "sha256": "64205fad2b0d1d96071a27cf47d770b4de06d3045613a29369872092eca25739"
+    },
+    {
+      "path": "after-dark.png",
+      "bytes": 65033,
+      "sha256": "0c5e2728ad1ca7ee278a443420b44b60436429fb46e7fed2b68c750cc46ba9a1"
+    },
+    {
+      "path": "after-en.png",
+      "bytes": 84002,
+      "sha256": "cf521ea865c1c63e11c5e597042ba5d8019738277d3c55d302b9979b00791499"
+    },
+    {
+      "path": "after-mobile.png",
+      "bytes": 35031,
+      "sha256": "cfe52dfbedffe548661794ea29fe39efbc8a2b30657091060bf7e7acf23dff4e"
+    },
+    {
+      "path": "README.md",
+      "bytes": 1481,
+      "sha256": "f28eb45cf29c910fde079f2e43fc9fe35c0ab18b2c35896a119f328870d45520"
+    }
+  ]
+}
