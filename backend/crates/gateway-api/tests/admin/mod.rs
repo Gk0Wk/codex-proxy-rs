@@ -113,6 +113,7 @@ pub(super) struct AdminTestFixture {
     pub dashboard_summary_range: Arc<Mutex<Option<TimeRange>>>,
     pub provider_error: Arc<Mutex<Option<ProviderAdminError>>>,
     pub provider_quota: Arc<Mutex<Option<ProviderQuota>>>,
+    pub provider_models: Arc<Mutex<Option<ProviderModels>>>,
     pub account: Arc<Mutex<Option<AccountPageItem>>>,
     pub account_usage: Arc<Mutex<Vec<AccountUsage>>>,
 }
@@ -189,16 +190,19 @@ impl AdminTestFixture {
             plugin_ports.clone(),
         );
         let provider_quota = Arc::new(Mutex::new(None));
+        let provider_models = Arc::new(Mutex::new(None));
         let providers: Vec<Arc<dyn ProviderAdmin>> = vec![
             Arc::new(UnusedProvider::new(
                 "openai",
                 Arc::clone(&provider_error),
                 Arc::clone(&provider_quota),
+                Arc::clone(&provider_models),
             )),
             Arc::new(UnusedProvider::new(
                 "xai",
                 Arc::clone(&provider_error),
                 Arc::clone(&provider_quota),
+                Arc::clone(&provider_models),
             )),
         ];
         let bundle = gateway_admin::initialize(
@@ -247,6 +251,7 @@ impl AdminTestFixture {
             dashboard_summary_range,
             provider_error,
             provider_quota,
+            provider_models,
             account,
             account_usage,
         }
@@ -1584,6 +1589,7 @@ struct UnusedProvider {
     kind: ProviderKind,
     error: Arc<Mutex<Option<ProviderAdminError>>>,
     quota: Arc<Mutex<Option<ProviderQuota>>>,
+    models: Arc<Mutex<Option<ProviderModels>>>,
 }
 
 impl UnusedProvider {
@@ -1591,11 +1597,13 @@ impl UnusedProvider {
         kind: &str,
         error: Arc<Mutex<Option<ProviderAdminError>>>,
         quota: Arc<Mutex<Option<ProviderQuota>>>,
+        models: Arc<Mutex<Option<ProviderModels>>>,
     ) -> Self {
         Self {
             kind: ProviderKind::new(kind).expect("provider kind"),
             error,
             quota,
+            models,
         }
     }
 }
@@ -1706,7 +1714,11 @@ impl ProviderAdmin for UnusedProvider {
         _: &ProviderAccountId,
         _: bool,
     ) -> Result<ProviderModels, ProviderAdminError> {
-        Err(unsupported_provider())
+        self.models
+            .lock()
+            .expect("provider models")
+            .clone()
+            .ok_or_else(unsupported_provider)
     }
 
     async fn export_credentials(

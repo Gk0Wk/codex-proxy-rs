@@ -66,48 +66,6 @@ pub(super) fn account_models_data(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::account_models_data;
-    use chrono::DateTime;
-    use gateway_admin::model::provider_credentials::{ProviderModel, ProviderModels};
-    use gateway_core::routing::UpstreamModelId;
-
-    #[test]
-    fn account_models_projection_exposes_catalog_observation_time() {
-        let observed_at: DateTime<chrono::Utc> = "2026-09-12T08:00:00Z".parse().unwrap();
-        let model_id = UpstreamModelId::new("gpt-6.1-sol").unwrap();
-        let data = account_models_data(
-            ProviderModels {
-                models: vec![ProviderModel {
-                    id: model_id,
-                    name: "gpt-6.1-sol".to_owned(),
-                }],
-                observed_at: Some(observed_at),
-            },
-            crate::TimePresenter::new(Default::default()),
-        );
-        let value = serde_json::to_value(data).unwrap();
-        assert_eq!(value["models"][0]["id"], "gpt-6.1-sol");
-        assert_eq!(value["observedAt"], "2026-09-12T16:00:00+08:00");
-        assert_eq!(value["observedAtDisplay"], "2026-09-12 16:00:00");
-    }
-
-    #[test]
-    fn account_models_projection_marks_unknown_observation_time() {
-        let data = account_models_data(
-            ProviderModels {
-                models: Vec::new(),
-                observed_at: None,
-            },
-            crate::TimePresenter::new(Default::default()),
-        );
-        let value = serde_json::to_value(data).unwrap();
-        assert!(value["observedAt"].is_null());
-        assert_eq!(value["observedAtDisplay"], "—");
-    }
-}
-
 pub(super) fn account_view(
     item: AccountDirectoryItem,
     now: DateTime<Utc>,
