@@ -21,6 +21,7 @@ const { t } = useI18n({ useScope: 'global' })
 const model = defineModel<AccountModelAccess | undefined>({ required: true })
 // 未取得目录时不能判断缺失，成功返回空目录则可以
 const catalog = ref<Array<{ id: string, label: string }>>()
+const catalogObservedAtDisplay = ref<string>()
 const search = ref('')
 const inputError = ref('')
 const request = useRequestState()
@@ -66,6 +67,9 @@ const mode = computed({
   },
 })
 const restricted = computed(() => mode.value === 'allowlist' || mode.value === 'denylist')
+const catalogDescription = computed(() => t('accounts.modelAccess.catalogDescription', {
+  observedAt: catalogObservedAtDisplay.value ?? '—',
+}))
 const canAdd = computed(() => Boolean(search.value.trim()) && !model.value?.models.includes(search.value.trim()))
 const models = computed(() => {
   const catalogReady = catalog.value !== undefined && !loading.value && !error.value
@@ -123,8 +127,10 @@ async function load(refresh = false) {
       { accountId },
       { signal: request.signal },
     )
-    if (request.isCurrent(requestId))
+    if (request.isCurrent(requestId)) {
       catalog.value = result.models
+      catalogObservedAtDisplay.value = result.observedAtDisplay
+    }
   }
   catch (cause) {
     request.fail(requestId, cause)
@@ -140,6 +146,7 @@ watch([
 ], () => {
   request.invalidate()
   catalog.value = undefined
+  catalogObservedAtDisplay.value = undefined
   search.value = ''
   inputError.value = ''
   error.value = ''
@@ -153,7 +160,7 @@ watch(search, () => {
 
 <template>
   <div class="grid gap-3">
-    <ZFormItem :label="t('accounts.modelAccess.modelLimitations')">
+    <ZFormItem :label="t('accounts.modelAccess.modelLimitations')" :description="restricted ? catalogDescription : undefined">
       <div class="flex min-w-0 items-center justify-between gap-2">
         <ZSegmented v-model="mode" class="w-80 min-w-0 max-w-full" :aria-label="t('accounts.modelAccess.modelRestrictionMode')" :options="modes" :disabled="disabled" />
         <ZIconButton v-if="restricted && accountId" :aria-label="t('accounts.modelAccess.refreshModel')" variant="plain" :loading="loading" :disabled="disabled" @click="load(true)">

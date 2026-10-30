@@ -880,7 +880,7 @@ config 返回 `{ name, plaintextKey }`，仅读取服务端会话绑定的当前
 | `POST` | `/api/admin/accounts/reset-credits` | `{ accountId, creditId?, redeemRequestId }` | 使用 UUIDv4 幂等键消费一张 Provider 重置卡 |
 | `GET` | `/api/admin/accounts/reset-credits/automation` | `accountId` | 读取自动使用开关与本地计划，不查询上游 |
 | `POST` | `/api/admin/accounts/reset-credits/automation` | `{ accountId, enabled }` | 设置账号自动使用开关，默认关闭 |
-| `GET` | `/api/admin/accounts/models` | `accountId` | 优先读取该 Provider + 套餐的模型 cache，缺失时有限实时拉取 |
+| `GET` | `/api/admin/accounts/models` | `accountId` | 优先读取该 Provider + 套餐的模型 cache，缺失时有限实时拉取；返回 `{ models, observedAt, observedAtDisplay }`，其中观察时间表示最近一次成功获取目录的时间 |
 | `GET` | `/api/admin/accounts/models/catalog` | `accountId` | 读取指定账号的完整 Codex 原生模型目录，返回 `{ modelCount, observedAt, catalog }` |
 | `POST` | `/api/admin/accounts/models/refresh` | `{ accountId }` | 强制拉取最新模型并覆盖 cache |
 | `GET` | `/api/admin/accounts/connection-test` | `accountId`、`modelId` | 通过 SSE 返回实时连接测试事件，不作为业务 Responses 用量记录 |
@@ -910,6 +910,9 @@ config 返回 `{ name, plaintextKey }`，仅读取服务端会话绑定的当前
 模型目录导出保留上游原生模型对象和能力字段，不包含账号凭据；不支持 Codex 原生目录的账号不能导出。
 响应中的 `catalog` 可直接保存为 JSON 文件，用于 Codex 的 `model_catalog_json` 配置。
 账号设置保存不等待上游模型目录刷新完成
+
+`/api/admin/accounts/models` 的 `models` 只表示上游模型目录返回了这些模型 ID；它不等价于 Responses、Chat Completions、Embeddings 或其他端点组合均已验证可用。
+使用模型限制前，应按实际端点执行连接测试或真实请求；目录观察时间用于判断候选列表的新鲜度，不改变路由或账号能力判断
 
 账号限流详情在 `quota` 中返回：`rateLimitReason` 为 `upstream_rate_limit`（上游临时限流）、
 `error_protection`（自定义错误规则触发保护）或 `null`。`recoveryProbeRequired` 表示解除冻结是否需要成功探测；
