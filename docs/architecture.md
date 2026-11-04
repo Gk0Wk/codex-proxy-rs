@@ -134,7 +134,7 @@ flowchart LR
 - **模型目录与路由共用事实**：`model_catalog` 的目录贡献保存在发布代次引用中，直接别名由插件负责条目正确性，条目冲突或目标不存在不阻止宿主快照发布。
   请求按顺序取首个匹配别名并直接使用其目标，不递归解析插件别名；Provider、账号权限与目标能力沿原选路流程处理。
   适配模型从同实例受管适配器继承静态账号范围，Core 按冻结权限与请求能力收窄候选账号，不改变调度评分、亲和或租约。
-  公开列表、详情、原生目录和受管模型查询复用相同目录贡献与账号访问范围，不另维护插件专用目录；合同见 SDK [模型目录](../backend/crates/gateway-plugin/sdk/docs/capabilities.md#模型目录)
+  公开列表、详情、客户端目录和受管模型查询复用同一组目录贡献与账号访问范围。Core 保留 Provider 的完整原生对象，在投影通用画像时应用当前账号范围的插件声明。合并顺序见 SDK [模型目录](../backend/crates/gateway-plugin/sdk/docs/capabilities.md#模型目录)
 - **重试由 Core 裁决**：`retry_policy` 只能停止或继续 Core 已允许的恢复路径；绑定按确定顺序委托，故障回退宿主。
   发送、交付、续接、外部副作用、预算和取消限制不进入插件控制面，策略返回后继续复核
 - **转换声明不替代正文事实**：中间件在 request 阶段声明具体承担的功能和额外上游需求，逐层继承尚未承担的需求，实际正文与有效需求共同参与选路。
@@ -621,7 +621,8 @@ client，OIDC 的 JWKS 缓存与单飞归属对应出口状态。自动刷新提
 客户端配置示例维护在 [部署文档](../deploy/README.md#客户端配置)
 
 客户端到代理与代理到上游的传输选择相互独立。客户端的 `supports_websockets = false`
-不禁止 Provider 使用上游 WebSocket。响应终态前的 Close 1000 仍视为失败，
+不禁止 Provider 使用上游 WebSocket。OpenAI Provider 按线程独立维护大包回退与 WS 失败预算，
+以终态会话更新提示下游重连；API 负责确认成功写出和入站队列空闲。响应终态前的 Close 1000 仍视为失败，
 后续恢复请求成功也不改写原失败请求的结果
 
 ### 错误与诊断三层边界
@@ -990,6 +991,8 @@ credential 与 quota 是两组独立事实：credential refresh 不等于 quota 
 - xAI 使用 OAuth session；API Key 不是受支持的账号 credential。刷新额度时同步查询官方实时订阅，
   只把套餐事实写入现有 quota JSON。明确无付费订阅的个人账号显示 Free；查询失败、缺失字段或
   团队身份不推断为 Free，订阅查询失败不影响额度观测
+  普通 Token 续期与刷新退避保留提交时的账号资料及额度快照，显式凭据轮换仍按原子提交合同失效旧观测。
+  xAI Provider 在缺少可展示上游额度时投影本地 24 小时滚动统计，Admin 按该窗口展示日用量，额度预测使用完整周/月窗口
 - 账号导入和 OAuth complete（包括重新授权）在 credential 提交、Provider 事实失效及快照发布后，
   由 Admin 共用流程后台读取一次额度；不等待观测完成才返回管理请求，失败记录告警但不回滚账号事务。
   手工和后台 credential refresh 仍不隐式刷新 quota

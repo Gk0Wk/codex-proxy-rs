@@ -475,13 +475,13 @@ Responses WebSocket 接受文本消息，`response.create` 在同一连接串行
 
 网关分别维护两段链路的心跳：上游 WS 定时发送 Ping 保活并回复 Pong，下游 WS 独立探活；Ping/Pong 不跨段转发，也不转换为 SSE 事件。
 下游探活包含消息接收中的字节进度，完整消息收齐后才进入中间件与请求处理。
-客户端断开时取消当前执行，并释放仍归该客户端所有的上游连接。`response.completed` 只结束本轮响应，保留客户端 WS 等待下一轮请求
+客户端断开时取消当前执行，并释放仍归该客户端所有的上游连接。`response.completed` 结束本轮响应。通常保留客户端 WS 等待下一轮请求，大包回退后的重连规则见下文
 
 | 入站 → 上游 | 正常回答结束后的连接处理 |
 | --- | --- |
 | SSE → SSE | 结束本次响应流，底层 HTTP 连接由 HTTP 连接池管理 |
 | SSE → WS | 结束 SSE，上游 WS 归池，按无客户端绑定的空闲期限回收 |
-| WS → SSE | 上游本次响应结束，下游 WS 保留 |
+| WS → SSE | 上游本次响应结束，下游 WS 通常保留；大包回退可触发正常重连 |
 | WS → WS | 保留当前绑定的上游 WS，支持下一轮续接 |
 
 活跃客户端 WS 的绑定不受普通空闲回收期限约束；上游关闭、总寿命到期或连接被回收仍可能使连接内续接失效，
@@ -520,7 +520,8 @@ OAuth 账号默认 `prefer_websocket`，客户端使用 HTTP/SSE 时仍可能选
 客户端可跳过预热继续正式请求，外部插件 adapter 按各自的协议能力处理
 
 Codex OAuth backend 的候选上游为 WS 时，无 `previous_response_id` 的普通新链若规范化
-`response.create` 达到 15 MiB，发送前选择 HTTP/SSE；HTTP 和 WS 入站均适用，下游交付协议不变。
+`response.create` 达到 15.5 MiB，发送前选择 HTTP/SSE；HTTP 和 WS 入站均适用。能关联到客户端线程时，
+后续完整新链沿用 HTTP/SSE，直到帧长低于 13.5 MiB 再尝试 WS。预热和增量帧不改变此大小判断。
 该阈值为已观察到的上游消息大小边界预留余量，不是网关输入长度上限或 OpenAI 公布的统一限制；
 API Key 账号、小请求、显式 warmup、未知外部 previous ID 和持久化续接不因该大小策略改用 HTTP
 
@@ -528,7 +529,11 @@ OAuth 的大 connection-local WS 续接，以及 HTTP `store=false` 成功后标
 的 WS 增量，均在发送前返回 `status: 400 / previous_response_not_found`。客户端应清除旧 ID，
 携带完整历史及工具调用／输出重试。官方 Codex 支持重连 WS 后完整重发，也可能按自身重试预算
 切到 HTTP；其他客户端需要自行实现此合同。代理不缓存 transcript，不把增量输入当作独立新链，
-连接内续接失去原连接时仍需客户端恢复；HTTP 链后续步骤可能增加一次恢复信号、重连及全量上传
+连接内续接失去原连接时仍需客户端恢复
+
+因大小走 HTTP/SSE 且需要完整重放时，网关写出成功终态后，会以关闭码 1000 正常关闭空闲的下游 WS。
+此规则适用于所有客户端。下一步请求应在新连接上发送完整输入，省略 `previous_response_id`。
+已接收的后续请求按序处理，若增量先到，仍按上述 400 合同恢复。启用 WS 帧中间件时保留连接
 
 已建立模型执行的 Responses、Images 和 Search HTTP 响应按以下规则返回关联 ID：
 `x-gateway-request-id` 为模型执行 ID；`x-request-id` 保留有效上游值，只有上游
@@ -571,7 +576,8 @@ xAI 没有 Codex 原生目录，使用官方 CLI proxy 当前目录生成通用�
 “与某个官方账号的整个目录完全一致”，也不会固定后续推理账号。
 读取失败返回 `503 model_catalog_unavailable`，不以简化模板或空成功响应覆盖客户端缓存。
 成功获取的 API Key 目录被账号模型政策全部过滤时返回空列表，区别于读取失败。
-插件声明的适配模型按受管适配器账号范围与当前 Key 权限交集追加；同名原生完整对象优先保留，不与插件画像拼接字段
+目录保留完整的原生 Codex 模型对象。对于 OpenAI API Key 普通模型列表和 xAI 目录生成的通用画像，
+当前 Key 可访问的适配器若声明了同名模型，其画像在原位置替换通用画像。仅由插件提供的可见模型按声明顺序追加到所属 Provider 的条目之后
 
 原生目录可能返回缓存结果，成功缓存有效期为 5 分钟。每次查询都检查账号资格和 Client Key 范围。
 成功目录响应带 `Cache-Control: private, no-store`，不借用上游 ETag 标识经过选择/别名/聚合后的正文
@@ -1060,7 +1066,7 @@ config 返回 `{ name, plaintextKey }`，仅读取服务端会话绑定的当前
 | `POST` | `/api/admin/accounts/reset-credits/automation` | `{ accountId, enabled }` | 设置账号自动使用开关，默认关闭 |
 | `GET` | `/api/admin/accounts/models` | `accountId` | 优先读取 Provider 模型目录缓存，缺失时有限实时拉取；返回 `{ models, observedAt, observedAtDisplay }` |
 | `GET` | `/api/admin/accounts/models/catalog` | `accountId` | 读取指定账号的完整 Codex 原生模型目录，返回 `{ modelCount, observedAt, catalog }` |
-| `POST` | `/api/admin/accounts/models/refresh` | `{ accountId }` | 强制拉取最新模型并覆盖缓存；成功时按账号原生目录与当前已注册适配模型并集清理 `allowlist`，响应可附带清理后的 `modelAccess` |
+| `POST` | `/api/admin/accounts/models/refresh` | `{ accountId }` | 强制拉取最新模型并覆盖缓存，响应结构与模型目录查询相同 |
 | `GET` | `/api/admin/accounts/connection-test` | `accountId`、`modelId` | 通过 SSE 返回实时连接测试事件，不作为业务 Responses 用量记录 |
 | `POST` | `/api/admin/accounts/oauth/start` | `{ provider, name, accountId?, outboundProxyId?, outboundProxyUrl? }` | 为支持登录的 Provider 创建 flow；`accountId` 表示重新授权 |
 | `POST` | `/api/admin/accounts/oauth/complete` | `{ provider, flowId, callbackUrl, settings? }` | 消费 OAuth callback；首次授权可附带账号设置，重新授权保留原设置 |
@@ -1087,7 +1093,7 @@ config 返回 `{ name, plaintextKey }`，仅读取服务端会话绑定的当前
 
 模型目录导出保留上游原生模型对象和能力字段，不包含账号凭据；不支持 Codex 原生目录的账号不能导出。
 响应中的 `catalog` 可直接保存为 JSON 文件，用于 Codex 的 `model_catalog_json` 配置。
-账号设置保存不等待上游模型目录刷新完成。强制刷新成功后才执行白名单清理；读取失败、运行时插件目录未就绪或清理结果为空时不改写原策略
+账号设置保存不等待上游模型目录刷新完成
 
 模型目录查询和刷新响应中的 `observedAt` 表示 Provider 最近一次成功获取目录的时间，`observedAtDisplay` 按部署时区格式化；Provider 未提供观察时间时分别返回 `null` 和 `—`
 
@@ -1193,7 +1199,10 @@ Key 预算及其访问状态随互联默认公开，不要求开启 `shareQuota`
 | `denylist` | 非空 ID 数组 | 排除指定模型 |
 
 最多 256 项，每个 ID 最多 256 字节；重复 ID 去重，不接受空白、控制字符、`__` 前缀或 `*` 通配符。
-允许保存当前上游目录尚未返回的 ID。限制按全局模型映射后的上游 ID 判断，不扩大账号本身的上游权限；后续强制刷新成功时，会移除当前账号原生目录与已注册适配器都未提供的白名单 ID，适配器账号范围内的模型会保留。
+允许保存当前上游目录尚未返回的 ID。限制按全局模型映射后的上游 ID 判断，不扩大账号本身的上游权限。
+管理端刷新目录只更新目录，不修改模型限制。白名单的清理按钮列出当前目录未返回的已选 ID，默认不选中任何项，
+由管理员确认后从当前表单移除，保存账号后生效。目录未就绪、刷新失败或返回空目录时不能清理，清理也不能将白名单置空。
+图像、搜索、插件适配模型和映射目标可能不在目录中，目录缺失本身不代表模型失效。
 例如 Plus 设置 `allowlist` 并选中 luna 的实际 ID，Pro 设置 `denylist` 并选中同一 ID，即可严格分流；
 Pro 使用 `all` 时也能参与 luna 调度。套餐名称不自动生成或修改规则
 
@@ -1435,7 +1444,8 @@ API Key 账号与 OAuth 共用现有 Responses、Images 和 standalone Search �
 互联账号按上游 Key 已提供的最长消费窗口统计本机 Token、费用和模型用量。
 日、周周期的 `usage.windowKind` 分别为 `daily`、`weekly`，其他周期为 `quota`。查询边界同账号额度窗口，为 `[resetAt - windowSeconds, resetAt)`；
 未开启或缺少重置边界时显示无数据，不回退到历史累计，也不采用池内其他账号的周期。
-OAuth 账号仍按实际周/月额度窗口统计
+OAuth 账号优先按实际周/月额度窗口统计。xAI 缺少可展示的上游额度时，使用过去 24 小时的本地请求统计，
+`usage.windowKind` 为 `daily`，请求图和用量统计共用该滚动范围。该统计可在上游额度快照缺失时展示
 
 批量导入 AT / RT 使用 `accounts` JSON 数组，最多 200 项，不接受纯文本 token 列表。例如：
 
